@@ -22,6 +22,8 @@ Pipeline 使用 `Custom` 识别，注册名固定为 `IconRecognition`。原生 
                 "custom_recognition_param": {
                     "grid_type": "transfer",
                     "item_ids": ["item_copper_ore"],
+                    "item_filters": ["Normal:Ore"],
+                    "item_recheck_filters": ["Normal:Ore"],
                     "deduplicate": true
                 },
                 "roi": [
@@ -114,38 +116,52 @@ Pipeline、Go Service 和 C++ API 使用同一套识别语义，只是字段承�
 
 原生 ROI 采用 1280x720 基准下的 `[x,y,width,height]` 语义，宽高必须为正且区域必须完全位于图片内。`single_roi` 还要求宽高相等。
 
-### `custom_recognition_param`
+### 支持的控制器
+
+`IconRecognition` 当前复用以下两套 1280x720 控制器 profile：
+
+| 运行时 `type` | 画面要求 | 网格 profile |
+| --- | --- | --- |
+| Win32、Linux/WlRoots、MacOS | 1280x720 | 标准 720p UI |
+| Adb、PlayCover | 1280x720、240 dpi | ADB 放大 UI |
+
+Custom 入口会从 `MaaContext` 读取运行时 `type` 并选择对应 profile；CloudADB 的运行时 `type` 是 `Adb`。除 Win32/Adb 外，上表中的兼容映射暂没有独立截图数据验证，后续可能根据实际画面调整。其他控制器、直接 C++ 调用或上下文不可用时从请求 ROI 的图像证据推断。证据不足时返回 `exception`，调用方不能指定比例。检测器只在内存中临时归一化画面以定位网格，返回前会把格子坐标映射回原图；物品模板仍按原图格子尺寸生成并在原图上匹配，因此 `cell_box`、`item_box` 始终是原图坐标。`single_roi` 不执行网格检测，也不会缩放输入图。
+
+组件不会根据 controller profile 猜测、移动或扩大请求 ROI。调用方始终负责传入完全位于图片内、且完整覆盖目标格子的原生 ROI；图像回退只读取该 ROI 内的像素。奖励界面应继续传入覆盖整组奖励的大 ROI，控制器类型和物品数量都不应由调用方用于改写 ROI。
+
+### custom_recognition_param
 
 | 字段 | 类型 | 必选 | 默认值 | 说明 |
 | -------------------- | ------------------- | ------------------------- | ------------------- | ------------------------------------------------------------------------------------------- |
 | `grid_type` | string / `GridType` | Custom 是；C++ 应显式设置 | Custom 无 | 选择当前界面的网格定位策略，合法值见下表；C++ 结构体中的初始值只用于构造占位 |
 | `item_ids` | string[] | 否 | `[]` | 只保留指定物品；多个 ID 取并集，不允许重复 |
 | `item_filters` | string[] | 否 | 由 `grid_type` 决定 | 按 `storageKind:categoryType` 选择候选；多个条件取并集，`*` 匹配该 `storageKind` 下全部分类 |
-| `threshold` | number | 否 | `0.85` | 物品被判定为命中并返回所需的最低最终分数；降低会增加误识别风险 |
+| `item_recheck_filters` | string[] | 否 | `[]` | 与 `item_ids` 均非空时生效；格式与 `item_filters` 相同；用于对已命中的候选格进行单格复核 |
+| `threshold` | number | 否 | `0.85` | 物品命中的最低最终分数，所有网格类型统一按该值判断 |
 | `subpixel_threshold` | number | 否 | `0.60` | 基础分达到该值但低于 `threshold` 时，在图标附近尝试更细的位置偏移 |
 | `deduplicate` | boolean | 否 | `false` | 同一个 `item_id` 命中多个格子时，只保留分数最高的一项 |
 | `debug` | boolean | 否 | `false` | 正常执行到结果汇总阶段时会收集网格和格子诊断；提前返回的 `invalid_image` 或 `exception` 可能不包含诊断。debug 控制性能计时和 Custom debug 文件写入 |
 
-阈值必须满足 `0 <= subpixel_threshold < threshold <= 1`。基础分低于 `subpixel_threshold` 时，组件认为当前候选明显不可靠，不再尝试更细的位置偏移，也不会把它放入 `matches`。基础分位于两个阈值之间时，组件会继续细化位置；只有最终分达到 `threshold`，并且没有被低纹理检查拒绝，结果才会返回。送货界面的数量条和贵重品库的头像区域会从模板匹配遮罩中排除，它们不会直接产生拒绝状态。调整阈值前应先检查 ROI、画面稳定性和候选分类。
+- **`threshold` 与 `subpixel_threshold`**：阈值必须满足 `0 <= subpixel_threshold < threshold <= 1`。基础分低于 `subpixel_threshold` 时，组件认为当前候选明显不可靠，不再尝试更细的位置偏移，也不会把它放入 `matches`。基础分位于两个阈值之间时，组件会继续细化位置；只有最终分达到 `threshold`，并且没有被低纹理检查拒绝，结果才会返回。送货界面的数量条和贵重品库的头像区域会从模板匹配遮罩中排除，但不会绕过统一阈值。调整阈值前应先检查 ROI、画面稳定性和候选分类。
+- **`item_ids` 与 `item_filters`**：`item_ids` 用于指定需要查找的具体物品，`item_filters` 用于按分类限制参与匹配的候选模板。两者同时提供时取交集。ID 不存在、ID 重复、过滤器格式错误、过滤结果为空，或指定 ID 被过滤器排除，都会返回 `exception`。
+- **`item_recheck_filters`**：使用 `item_ids` 查找指定物品时，范围外但外观相似的物品可能被误识别为目标物品。`item_recheck_filters` 对已命中的候选格进行单格复核，仅保留复核结果确实为目标 `item_id` 的候选。相比不传 `item_ids`、仅使用 `item_filters` 识别整个网格，这种方式只复核已命中的格子，通常更快。建议同时设置 `deduplicate: true`，避免重复复核同一物品。
 
-`item_ids` 与 `item_filters` 同时提供时取交集。ID 不存在、ID 重复、过滤器格式错误、过滤结果为空，或指定 ID 被过滤器排除，都会返回 `exception`。
+### grid_type、默认候选和参考 ROI
 
-### `grid_type`、默认候选和参考 ROI
-
-| `grid_type` | C++ `GridType` | 界面 | 默认 `item_filters` | 参考 ROI |
-| --------------- | ------------------------ | ---------------- | ---------------------------------------- | ---------------------------------------------------------------------------- |
-| `trade` | `GridType::Trade` | 据点交易 | `Normal:Product`、`Normal:Usable` | `[170,165,935,385]` |
-| `transfer` | `GridType::Transfer` | 背包和仓库 | `Normal:*` | 完整 `[154,202,983,291]`；左侧 `[154,202,585,291]`；右侧 `[739,202,398,291]` |
-| `port_storager` | `GridType::PortStorager` | 便捷存取站 | `Normal:*` | 完整 `[190,250,880,350]`；左侧 `[190,250,318,350]`；右侧 `[570,250,500,350]` |
-| `valuables` | `GridType::Valuables` | 贵重品库 | `ValuableDepot:*` | `[24,76,950,570]` |
-| `shipment` | `GridType::Shipment` | 送货界面 | `Normal:*` | `[34,132,386,474]` |
-| `credit_trade` | `GridType::CreditTrade` | 信用交易所 | `ValuableDepot:SpecialItem`、`Isolate:*` | `[70,95,1140,415]` |
-| `rewards` | `GridType::Rewards` | 奖励界面 | `Isolate:*` | `[39,82,1205,511]` |
-| `single_roi` | `GridType::SingleRoi` | 调用方指定的单格 | `Normal:*` | 任意位于图片内的正方形；示例 `[1177,450,54,54]` |
+| `grid_type` | C++ `GridType` | 界面 | 默认 `item_filters` | Win32 参考 ROI | ADB 参考 ROI |
+| --------------- | ------------------------ | ---------------- | ---------------------------------------- | ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `trade` | `GridType::Trade` | 据点交易 | `Normal:Product`、`Normal:Usable` | `[170,165,935,385]` | `[32,46,1216,549]` |
+| `transfer` | `GridType::Transfer` | 背包和仓库 | `Normal:*` | 完整 `[154,202,983,291]`；左侧 `[154,202,585,291]`；右侧 `[739,202,398,291]` | 完整 `[30,160,1220,370]`；左侧 `[30,160,710,370]`；右侧 `[780,160,470,370]` |
+| `port_storager` | `GridType::PortStorager` | 便捷存取站 | `Normal:*` | 完整 `[190,250,880,350]`；左侧 `[190,250,318,350]`；右侧 `[570,250,500,350]` | 完整 `[78,228,1150,410]`；左侧 `[78,228,368,410]`；右侧 `[562,326,620,293]` |
+| `valuables` | `GridType::Valuables` | 贵重品库 | `ValuableDepot:*` | `[24,76,950,570]` | `[100,85,790,540]` |
+| `shipment` | `GridType::Shipment` | 送货界面 | `Normal:*` | `[34,132,386,474]` | `[43,169,480,408]` |
+| `credit_trade` | `GridType::CreditTrade` | 信用交易所 | `ValuableDepot:SpecialItem`、`Isolate:*` | `[70,95,1140,415]` | `[10,120,1250,510]` |
+| `rewards` | `GridType::Rewards` | 奖励界面 | `Isolate:*`、`ValuableDepot:*` | `[39,82,1205,511]` | `[178,140,935,440]` |
+| `single_roi` | `GridType::SingleRoi` | 调用方指定的单格 | `Normal:*` | 任意位于图片内的正方形；示例 `[1177,450,54,54]` | 任意位于图片内的正方形；示例 `[1151,393,66,66]` |
 
 参考 ROI 均为 1280x720 绝对坐标，不是相对于其它 ROI 的局部坐标。它们只适用于表中的对应界面；调用方应确保 ROI 完整覆盖要识别的格子。仓库类界面传入单侧 ROI 时，仍然使用画面绝对坐标。
 
-`rewards` 按白色奖励卡片定位，每一行独立确定横向起点，不要求多行列对齐。公开结果仍将这些行视为同一个多行网格：`row` 按画面从上到下递增，每行的 `column` 独立从 0 开始。多个游戏功能共用这种界面，不同功能展示的物品分类可能不同；未传入 `item_filters` 或传入空数组时使用默认候选集 `Isolate:*`，传入非空 `item_filters` 时会完整替换默认候选集。
+`rewards` 按白色奖励卡片定位，并要求整组网格大致居中。单行按实际物品数计算宽度；多行从首行观测推导列数，后续行复用首行左边界，只有末行可以不足一行。多个游戏功能共用这种界面，不同功能展示的物品分类可能不同；未传入 `item_filters` 或传入空数组时使用默认候选集 `Isolate:*`、`ValuableDepot:*`，传入非空 `item_filters` 时会完整替换默认候选集。
 
 ### 物品 ID
 
@@ -204,10 +220,10 @@ Pipeline、Go Service 和 C++ API 使用同一套识别语义，只是字段承�
 
 | 字段 | 类型 | 说明 |
 | ---------------- | ------- | ---------------------------------------------- |
-| `detail_version` | integer | detail 契约版本，当前为 `1` |
+| `detail_version` | integer | detail 契约版本，当前为 `2` |
 | `matched` | boolean | 是否至少有一个物品达到阈值并通过界面规则检查 |
 | `grid_type` | string | 本次请求的网格类型；参数解析前失败时可能不存在 |
-| `roi` | object | 请求 ROI，字段为 `x/y/width/height` |
+| `roi` | integer[4] | 请求 ROI，格式为 `[x,y,width,height]` |
 | `matches` | array | 实际返回给调用方的物品，按分数和位置排序 |
 | `error` | object | 失败时出现，包含稳定的 `code` 和可读 `message` |
 
@@ -220,8 +236,8 @@ Pipeline、Go Service 和 C++ API 使用同一套识别语义，只是字段承�
 | `category` | string | catalog 中文分类标签 |
 | `storage_kind` / `category_type` | string | 可用于后续过滤和业务判断的分类字段 |
 | `rarity` | integer | catalog 稀有度 |
-| `cell_box` | object | 所属格子；`single_roi` 时等于请求 ROI |
-| `item_box` | object | 最终模板命中位置 |
+| `cell_box` | integer[4] | 所属格子，格式为 `[x,y,width,height]`；`single_roi` 时等于请求 ROI |
+| `item_box` | integer[4] | 最终模板命中位置，格式为 `[x,y,width,height]` |
 | `score` | number | 最终匹配分数 |
 | `row` / `column` | integer | 真实网格中的行列；`single_roi` 不返回 |
 
@@ -242,6 +258,9 @@ Pipeline、Go Service 和 C++ API 使用同一套识别语义，只是字段承�
 `no_match` 会保留已解析的 `grid_type` 和 `roi`。解析期间发生的 `exception` 可能没有完整请求字段。
 
 ## 参考界面
+
+> [!NOTE]
+> 以下截图和图中 ROI 均来自 Win32 控制器，不适用于 ADB 控制器；ADB 请使用上表中的参考 ROI。
 
 <details>
 <summary>据点交易</summary>
@@ -296,23 +315,36 @@ Pipeline、Go Service 和 C++ API 使用同一套识别语义，只是字段承�
 
 Go Service 通过 `ctx.RunRecognitionDirect` 调用注册名 `IconRecognition`。原生 ROI 设置在 `CustomRecognitionParam.ROI`，其余字段放入 `CustomRecognitionParam.CustomRecognitionParam`：
 
+MaaEnd Go Service 调用方应直接复用 `agent/go-service/pkg/iconrecognition`，不要在业务包中重复声明 IconRecognition 的参数或 detail JSON 结构。`Params` 对应 `custom_recognition_param`，`Detail`/`Match` 对应组件 detail，`Match.CellBox` 是可用于后续操作的格子坐标：
+
 ```go
+import "github.com/MaaXYZ/MaaEnd/agent/go-service/pkg/iconrecognition"
+
 detail, err := ctx.RunRecognitionDirect(
     maa.RecognitionTypeCustom,
     &maa.CustomRecognitionParam{
         ROI:                maa.NewTargetRect(maa.Rect{154, 202, 983, 291}),
-        CustomRecognition: "IconRecognition",
-        CustomRecognitionParam: map[string]any{
-            "grid_type":   "transfer",
-            "item_ids":    []string{"item_copper_ore"},
-            "deduplicate": true,
-        },
+        CustomRecognition: iconrecognition.CustomRecognitionName,
+        CustomRecognitionParam: iconrecognition.NewParams(
+            iconrecognition.WithGridType(iconrecognition.GridTypeTransfer),
+            iconrecognition.WithItemIDs("item_copper_ore"),
+            iconrecognition.WithItemFilters(iconrecognition.StorageFilter().Normal.Ore),
+            iconrecognition.WithDeduplicate(true),
+        ),
     },
     img,
 )
+
+parsed, _, err := iconrecognition.ParseRecognitionDetail(detail)
+if err != nil {
+    return
+}
+for _, match := range parsed.Matches {
+    _ = match.CellBox
+}
 ```
 
-优先使用 `RecognitionDetail.Results` 取得组件结果：命中时读取 `Results.Best.AsCustom()`；未命中时 `Results.Best` 为 `nil`，应读取 `Results.All[0].AsCustom()`。两者返回的 `CustomRecognitionResult.Detail` 都是组件 JSON。若直接解析外层 `DetailJson`，对应路径分别是 `best.detail` 和 `all[0].detail`，不能在未命中时无条件读取 `best.detail`。Go 端解析组件 JSON 时可只声明业务需要的字段；未知字段会被 `encoding/json` 忽略。
+`iconrecognition.ParseRecognitionDetail` 负责从 Maa 结果中选择 Custom detail：命中时读取 `Results.Best`，未命中时读取 `Results.All[0]`，调用方无需自行合并或去重结果桶。若已经取得 `CustomRecognitionResult.Detail` 字符串，也可以直接使用 `iconrecognition.ParseDetail`。
 
 ## C++ API 调用
 

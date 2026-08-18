@@ -13,6 +13,7 @@
 #include "../utils.h"
 #include "IconRecognizer.h"
 #include "detail/DebugCapture.h"
+#include "detail/GridProfiles.h"
 
 #ifndef MAA_TRUE
 #define MAA_TRUE 1
@@ -45,6 +46,7 @@ CandidateFilter ReadCandidates(const json::object& object)
     };
     candidates.item_ids = read("item_ids");
     candidates.item_filters = read("item_filters");
+    candidates.item_recheck_filters = read("item_recheck_filters");
     return candidates;
 }
 
@@ -92,6 +94,30 @@ IconRecognizer& GetRecognizer()
     return *recognizer;
 }
 
+std::string ControllerTypeFromContext(MaaContext* context)
+{
+    if (context == nullptr) {
+        return {};
+    }
+    MaaTasker* tasker = MaaContextGetTasker(context);
+    MaaController* controller = tasker == nullptr ? nullptr : MaaTaskerGetController(tasker);
+    if (controller == nullptr) {
+        return {};
+    }
+
+    ScopedStringBuffer buffer;
+    if (buffer.Get() == nullptr || !MaaControllerGetInfo(controller, buffer.Get()) || MaaStringBufferIsEmpty(buffer.Get())) {
+        return {};
+    }
+    const char* raw = MaaStringBufferGet(buffer.Get());
+    const auto parsed = raw == nullptr ? std::optional<json::value> {} : json::parse(raw);
+    if (!parsed || !parsed->is_object() || !parsed->as_object().contains("type")) {
+        return {};
+    }
+    const auto& type = parsed->as_object().at("type");
+    return type.is_string() ? type.as_string() : std::string {};
+}
+
 void WriteDetail(MaaStringBuffer* buffer, const RecognitionResult& result)
 {
     if (buffer == nullptr) {
@@ -120,7 +146,7 @@ void SaveDebugCaptureBestEffort(const cv::Mat& image, const RecognitionResult& r
 } // namespace
 
 MaaBool MAA_CALL IconRecognitionRun(
-    [[maybe_unused]] MaaContext* context,
+    MaaContext* context,
     [[maybe_unused]] MaaTaskId task_id,
     [[maybe_unused]] const char* node_name,
     [[maybe_unused]] const char* custom_recognition_name,
@@ -162,12 +188,16 @@ MaaBool MAA_CALL IconRecognitionRun(
         if (roi->width <= 0 || roi->height <= 0) {
             throw std::invalid_argument("IconRecognition roi width and height must be positive");
         }
+        if (object.contains("grid_scale")) {
+            throw std::invalid_argument("IconRecognition grid_scale is not supported; controller profile is selected automatically");
+        }
         const bool debug = ReadBool(object, "debug", false);
         debug_requested = debug;
         RecognitionRequest request;
         request.grid_type = *parsed_grid_type;
         request.roi = cv::Rect(roi->x, roi->y, roi->width, roi->height);
         request.candidates = ReadCandidates(object);
+        request.grid_scale_hint = detail::GridScaleForControllerType(ControllerTypeFromContext(context));
         request.threshold = ReadDouble(object, "threshold", request.threshold);
         request.subpixel_threshold = ReadDouble(object, "subpixel_threshold", request.subpixel_threshold);
         request.deduplicate = ReadBool(object, "deduplicate", request.deduplicate);
@@ -187,6 +217,23 @@ MaaBool MAA_CALL IconRecognitionRun(
                                  result.matches.front().cell_box.height };
         }
         return MAA_TRUE;
+    }
+    catch (const std::invalid_argument& e) {
+        RecognitionResult result;
+        if (parsed_grid_type) {
+            result.grid_type = *parsed_grid_type;
+        }
+        else {
+            result.has_grid_type = false;
+        }
+        result.error_code = "invalid_argument";
+        result.message = e.what();
+        if (debug_requested && image != nullptr && !MaaImageBufferIsEmpty(image)) {
+            SaveDebugCaptureBestEffort(to_mat(image), result, task_id);
+        }
+        WriteDetail(out_detail, result);
+        LogError << "IconRecognition rejected invalid input" << VAR(e.what());
+        return MAA_FALSE;
     }
     catch (const std::exception& e) {
         RecognitionResult result;

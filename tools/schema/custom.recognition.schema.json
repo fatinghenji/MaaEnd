@@ -58,7 +58,11 @@
             "if": {
                 "type": "object",
                 "required": [ "custom_recognition" ],
-                "properties": { "custom_recognition": { "const": "IconRecognition" } }
+                "properties": {
+                    "custom_recognition": {
+                        "const": "IconRecognition"
+                    }
+                }
             },
             "then": {
                 "type": "object",
@@ -78,6 +82,7 @@
                                     "valuables",
                                     "shipment",
                                     "credit_trade",
+                                    "rewards",
                                     "single_roi"
                                 ],
                                 "title": "Grid Type",
@@ -103,13 +108,23 @@
                                 "title": "Item Filters",
                                 "description": "Optional storageKind:categoryType filters for candidate icons."
                             },
+                            "item_recheck_filters": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string",
+                                    "minLength": 1
+                                },
+                                "uniqueItems": true,
+                                "title": "Item Recheck Filters",
+                                "description": "Optional storageKind:categoryType filters for reverse-checking item_ids; deduplicate is recommended to avoid repeated checks."
+                            },
                             "threshold": {
                                 "type": "number",
                                 "minimum": 0,
                                 "maximum": 1,
                                 "default": 0.85,
                                 "title": "Threshold",
-                                "description": "Minimum final match score. Lower values increase recall and false-positive risk."
+                                "description": "General minimum final match score enforced uniformly for every grid type."
                             },
                             "subpixel_threshold": {
                                 "type": "number",

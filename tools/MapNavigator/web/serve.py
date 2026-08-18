@@ -19,7 +19,7 @@
   GET  /basemap-by-zone       -> 任意 zone 字符串 -> 解析后的底图 PNG (resolve_zone_image)
   GET  /api/zone-ids          -> assert 模式 zone 下拉可选值 (list_available_zone_ids)
   GET  /mesh/{zone_id}        -> 某几何区的 NMSH 二进制网格缓冲 (application/octet-stream)
-  POST /api/route             -> 栅格路线 (RecastEngine); 诊断在 recast 键
+  POST /api/route             -> 栅格路线; 失败时附起终点的离网探针
   GET  /api/settings          -> 读取 ~/.maaend/mapnavigator.json
   PUT  /api/settings          -> 写入 ~/.maaend/mapnavigator.json
   GET  /api/adb/devices       -> adb devices -l 枚举 (容错)
@@ -38,10 +38,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-import math
 import os
+import secrets
 import socket
-import struct
 import subprocess
 import sys
 import threading
@@ -53,10 +52,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-import numpy as np
-
 # --- 让被复用的父目录模块 (bare-name import) 可被解析 --------------------------------
-# 这些模块 (basenav_preview / model / runtime / recording_service / ...) 位于
+# 这些模块 (navmesh_backend / model / runtime / recording_service / ...) 位于
 # tools/MapNavigator/, 且彼此以裸模块名互相 import (e.g. `from runtime import ...`)。
 # serve.py 在 tools/MapNavigator/web/ 下, 故须把父目录插到 sys.path 最前。
 _PARENT_DIR = Path(__file__).resolve().parent.parent  # tools/MapNavigator
@@ -64,18 +61,8 @@ if str(_PARENT_DIR) not in sys.path:
     sys.path.insert(0, str(_PARENT_DIR))
 
 import key_listener  # noqa: E402  (ensure_privileges, 录制开始时才调用)
-from basenav_preview import (  # noqa: E402
-    _closest_point_on_triangle,
-    _point_in_triangle,
-    load_basenav_field,
-)
-from connection_models import (  # noqa: E402
-    AdbConnectionConfig,
-    PlayCoverConnectionConfig,
-    RecordingSessionConfig,
-    Win32ConnectionConfig,
-    WlRootsConnectionConfig,
-)
+from clipboard import copy_to_clipboard  # noqa: E402
+from connection_models import session_config_from_payload  # noqa: E402
 from connectors import (  # noqa: E402
     build_recording_connector,
     find_game_window,
@@ -84,8 +71,7 @@ from connectors import (  # noqa: E402
     resolve_adb_path,
 )
 from model import normalize_zone_id, resolve_zone_image  # noqa: E402
-from recastnav import DECK_BAND  # noqa: E402
-from recastnav_route import RecastEngine  # noqa: E402
+from navmesh_backend import NavmeshBackend  # noqa: E402
 from recording_service import LivePosition, RecordingService, parse_live_position  # noqa: E402
 from runtime import (  # noqa: E402
     AGENT_DIR,
@@ -121,15 +107,6 @@ NAVMESH_GZ = NAVMESH_DIR / "base.nav.gz"
 NAVMESH_RAW = NAVMESH_DIR / "base.nav"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
-# cpp-algo navmesh_path_expander.cpp 同名常量
-START_RECOVERY_MAX_BLIND_WALK = 32.0
-BLIND_TARGET_MAX_EXTENSION = 30.0
-
-# NMSH 二进制网格缓冲 (小端), 见 DESIGN §2.4
-NMSH_MAGIC = b"NMSH"
-NMSH_VERSION = 1
-_NMSH_HEADER = struct.Struct("<4sIII")  # magic, version, vertex_count, triangle_count
-
 # 只绑 127.0.0.1 —— 后端会 spawn 进程 / 连 ADB / 载 maafw, 绝不暴露到局域网。
 LISTEN_HOST = "127.0.0.1"
 DEFAULT_PORT = 8770
@@ -142,179 +119,7 @@ def _log(message: str) -> None:
     print(f"{_LOG_PREFIX} {message}", file=sys.stderr, flush=True)
 
 
-# --- Navmesh 场 (一次加载, 后台线程) ---------------------------------------------------
-class FieldManager:
-    """惰性、线程安全地加载 BaseNavField 一次, 并缓存各几何区的 NMSH 网格字节。
-
-    加载在后台线程进行 (62MB pack, 冷加载约数秒); 就绪前 get() 阻塞在事件上。
-    加载失败也会 set 事件 (get() 随即抛出记录的错误), 绝不永久挂起调用方。
-    """
-
-    def __init__(self, gz_path: Path, raw_path: Path) -> None:
-        self._gz_path = gz_path
-        self._raw_path = raw_path
-        self._field: Any = None
-        self._error: str | None = None
-        self._progress: float = 0.0
-        self._ready = threading.Event()
-        self._start_lock = threading.Lock()
-        self._started = False
-        self._mesh_cache: dict[int, bytes] = {}
-        self._mesh_lock = threading.Lock()
-
-    def _resolve_path(self) -> Path:
-        if self._gz_path.exists():
-            return self._gz_path
-        return self._raw_path
-
-    def ensure_loading(self) -> None:
-        with self._start_lock:
-            if self._started:
-                return
-            self._started = True
-        threading.Thread(target=self._load, name="basenav-load", daemon=True).start()
-
-    def _load(self) -> None:
-        path = self._resolve_path()
-        try:
-            if not path.exists():
-                raise FileNotFoundError(f"未找到 NavMesh 文件: {self._gz_path} (或 {self._raw_path})")
-
-            def _progress(value: float) -> None:
-                # basenav 的粗粒度进度回调 (0..~0.59); 归一到 0..1 供前端展示。
-                try:
-                    self._progress = min(1.0, max(0.0, float(value)))
-                except Exception:
-                    pass
-
-            _log(f"开始加载 navmesh: {path}")
-            field = load_basenav_field(path, progress_callback=_progress)
-            self._field = field
-            self._progress = 1.0
-            _log("navmesh 加载完成")
-            try:
-                field.start_background_verify()
-            except Exception as exc:  # noqa: BLE001
-                _log(f"start_background_verify 失败(忽略): {exc}")
-        except Exception as exc:  # noqa: BLE001
-            self._error = str(exc)
-            _log(f"navmesh 加载失败: {exc}")
-        finally:
-            self._ready.set()
-
-    def status(self) -> dict[str, Any]:
-        return {
-            "ready": self._field is not None,
-            "loading": self._started and self._field is None and self._error is None,
-            "progress": self._progress,
-            "error": self._error,
-            "path": str(self._resolve_path()),
-        }
-
-    def get(self, timeout: float | None = 600.0):
-        """阻塞直到场就绪并返回它; 失败时抛 RuntimeError。仅在工作线程 (threadpool) 中调用。"""
-        self.ensure_loading()
-        if not self._ready.wait(timeout):
-            raise RuntimeError("navmesh 加载超时")
-        if self._field is None:
-            raise RuntimeError(self._error or "navmesh 加载失败")
-        return self._field
-
-    def mesh_bytes(self, zone_id: int) -> bytes | None:
-        """返回某区所对应几何区的 NMSH 缓冲 (tier 会被解析到其父几何区)。
-
-        无三角面 (tier / 未知区) 时返回 None -> 端点回 404。结果按几何区 id 缓存。
-        """
-        field = self.get()
-        geom_id = int(field.geometry_zone_id(zone_id))
-        with self._mesh_lock:
-            cached = self._mesh_cache.get(geom_id)
-        if cached is not None:
-            return cached
-
-        zone = field.zone_by_id.get(geom_id)
-        if zone is None or zone.triangle_count <= 0:
-            return None
-
-        data = _serialize_zone_mesh(field, zone)
-        with self._mesh_lock:
-            self._mesh_cache[geom_id] = data
-        return data
-
-
-def _serialize_zone_mesh(field: Any, zone: Any) -> bytes:
-    """把一个几何区的三角面序列化成 NMSH 二进制缓冲 (顶点去重, 索引紧凑)。
-
-    区的三角面在文件中是连续分区 (triangle_zone[i] 由 [first, first+count) 切片赋值),
-    故直接切片等价于 `[i for i in ... if field.triangle_zone[i]==geom_id]`, 但只需 O(count)。
-    """
-    start = zone.first_triangle
-    end = start + zone.triangle_count
-    slice_triangles = field.triangles[start:end]
-
-    # 展平该区所有三角形的全局顶点下标 (v0,v1,v2 顺序), 供 numpy 去重。
-    flat_arr = np.column_stack(
-        [slice_triangles["v0"], slice_triangles["v1"], slice_triangles["v2"]]
-    ).ravel()
-
-    # 全局顶点下标 -> 局部下标 (顺序无关, 前端只按下标取顶点)。
-    unique_global, inverse = np.unique(flat_arr, return_inverse=True)
-    inverse = np.asarray(inverse).reshape(-1)  # 跨 numpy 版本保证 1-D
-
-    vertex_count = int(unique_global.shape[0])
-    vertex_buffer = np.empty((vertex_count, 3), dtype="<f4")
-    vertex_buffer[:, 0] = field.vertices["u"][unique_global]
-    vertex_buffer[:, 1] = field.vertices["v"][unique_global]
-    vertex_buffer[:, 2] = field.vertices["h"][unique_global]  # world-Y, 供楼层带
-
-    index_buffer = inverse.astype("<u4")
-
-    header = _NMSH_HEADER.pack(NMSH_MAGIC, NMSH_VERSION, vertex_count, int(zone.triangle_count))
-    return header + vertex_buffer.tobytes() + index_buffer.tobytes()
-
-
-field_manager = FieldManager(NAVMESH_GZ, NAVMESH_RAW)
-
-
-# --- 路线引擎 ----------
-_recast_engine: RecastEngine | None = None
-_recast_engine_lock = threading.Lock()
-
-
-def get_recast_engine(field: Any) -> RecastEngine:
-    global _recast_engine
-    with _recast_engine_lock:
-        if _recast_engine is None:
-            _recast_engine = RecastEngine(field)
-        return _recast_engine
-
-
-_prewarm_started: set[int] = set()
-_prewarm_lock = threading.Lock()
-
-
-def _prewarm_recast(zone_id: int) -> None:
-    try:
-        field = field_manager.get()
-        geom_id = int(field.geometry_zone_id(zone_id))
-        zone = field.zone_by_id.get(geom_id)
-        if zone is None or zone.triangle_count <= 0:
-            return
-        get_recast_engine(field).warm(zone.name)
-    except Exception as exc:  # noqa: BLE001
-        _log(f"路线引擎预热失败(下次拉取该区网格时重试): {exc}")
-    finally:
-        with _prewarm_lock:
-            _prewarm_started.discard(zone_id)
-
-
-def prewarm_recast_in_background(zone_id: int) -> None:
-    """前端拉走某区网格时预热该区路线引擎, 区准备与用户看图的时间重叠。"""
-    with _prewarm_lock:
-        if zone_id in _prewarm_started:
-            return
-        _prewarm_started.add(zone_id)
-    threading.Thread(target=_prewarm_recast, args=(zone_id,), name="recast-prewarm", daemon=True).start()
+navmesh_backend = NavmeshBackend(NAVMESH_GZ if NAVMESH_GZ.exists() else NAVMESH_RAW)
 
 
 # --- maafw 运行时 (惰性加载, 仅录制需要) ----------------------------------------------
@@ -337,73 +142,163 @@ def get_runtime() -> Any:
         return _runtime_cache
 
 
-# --- 剪贴板 (G 热键: 录制中游戏持有焦点, 必须由后端直接写系统剪贴板) ---------------------
-def _copy_to_clipboard(text: str) -> bool:
-    try:
-        import pyperclip
-
-        pyperclip.copy(text)
-        return True
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        if sys.platform == "darwin":
-            subprocess.run(["pbcopy"], input=text.encode("utf-8"), check=True)
-            return True
-        if sys.platform == "win32":
-            # Windows 'clip' 读 UTF-16LE
-            subprocess.run(["clip"], input=text.encode("utf-16-le"), check=True)
-            return True
-        subprocess.run(["xclip", "-selection", "clipboard"], input=text.encode("utf-8"), check=True)
-        return True
-    except Exception as exc:  # noqa: BLE001
-        _log(f"剪贴板写入失败: {exc}")
-        return False
-
-
 # --- 设置存储 -------------------------------------------------------------------------
 settings_store = MapNavigatorSettingsStore()
 
 
-# --- 录制会话构造 + 单例守卫 ----------------------------------------------------------
+# --- 录制单例守卫 ---------------------------------------------------------------------
 _recording_lock = threading.Lock()
 
 
-def _build_session_config(payload: dict[str, Any]) -> RecordingSessionConfig:
-    kind = payload.get("kind", "win32")
-    if kind == "adb":
-        adb = payload.get("adb") or {}
-        cfg = adb.get("config")
-        return RecordingSessionConfig(
-            kind="adb",
-            adb=AdbConnectionConfig(
-                adb_path=str(adb.get("adb_path", "") or ""),
-                address=str(adb.get("address", "") or ""),
-                config=cfg if isinstance(cfg, dict) else {},
-            ),
-        )
-    elif kind == "playcover":
-        playcover = payload.get("playcover") or {}
-        return RecordingSessionConfig(
-            kind="playcover",
-            playcover=PlayCoverConnectionConfig(
-                address=str(playcover.get("address", "127.0.0.1:1717") or "127.0.0.1:1717"),
-                uuid=str(playcover.get("uuid", "maa.playcover") or "maa.playcover"),
-            ),
-        )
-    elif kind == "wlroots":
-        wlroots = payload.get("wlroots") or {}
-        return RecordingSessionConfig(
-            kind="wlroots",
-            wlroots=WlRootsConnectionConfig(
-                wlr_socket_path=str(wlroots.get("wlr_socket_path", "") or ""),
-            ),
-        )
-    win = payload.get("win32") or {}
-    return RecordingSessionConfig(
-        kind="win32",
-        win32=Win32ConnectionConfig(window_title=str(win.get("window_title", "Endfield") or "Endfield")),
-    )
+# --- 提权录制子进程 (Windows 非管理员时) -----------------------------------------------
+# 热键要管理员权限, 但本服务是长驻进程不能自己 runas 重启 (会另起一整套服务并丢掉页面
+# 状态), 所以只提权录制这一段。协议见 record_worker.py。
+_WORKER_PY = _PARENT_DIR / "record_worker.py"
+WORKER_CONNECT_TIMEOUT_SECONDS = 30.0  # 计时从 UAC 答复后开始; 子进程冷启 maafw 要好几秒
+SE_ERR_ACCESSDENIED = 5  # ShellExecuteW: 用户拒绝了 UAC
+
+
+class ElevatedRecordingBridge:
+    """拉起提权录制子进程, 并在它与调用方之间转发 NDJSON 消息。
+
+    子进程发来的就是前端协议本身, 故转发是直通, 前端不用改。
+    """
+
+    def __init__(self, elevate: bool = True) -> None:
+        self._elevate = elevate
+        self._server: asyncio.Server | None = None
+        self._reader: asyncio.StreamReader | None = None
+        self._writer: asyncio.StreamWriter | None = None
+        self._connected: asyncio.Future[tuple[asyncio.StreamReader, asyncio.StreamWriter]] | None = None
+        self._token = secrets.token_hex(16)
+
+    async def spawn(self) -> str | None:
+        """监听回连端口 -> 提权拉起子进程 -> 等它握手。
+
+        返回 None 表示就绪; 否则返回失败原因 (调用方据此回退到进程内录制)。
+        """
+        loop = asyncio.get_running_loop()
+        self._connected = loop.create_future()
+
+        async def on_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            # 只认第一个通过 token 校验的连接; 其余一律丢弃。
+            # 校验写成显式判断: assert 在 python -O 下会被整条删掉, 等于没校验。
+            try:
+                line = await asyncio.wait_for(reader.readline(), timeout=WORKER_CONNECT_TIMEOUT_SECONDS)
+                hello = json.loads(line.decode("utf-8"))
+            except Exception:  # noqa: BLE001
+                writer.close()
+                return
+            token = hello.get("token") if isinstance(hello, dict) else None
+            if (
+                not isinstance(token, str)
+                or hello.get("type") != "hello"
+                or not secrets.compare_digest(token, self._token)
+            ):
+                _log("丢弃一个握手不合法的回连。")
+                writer.close()
+                return
+            if self._connected is not None and not self._connected.done():
+                self._connected.set_result((reader, writer))
+            else:
+                writer.close()
+
+        self._server = await asyncio.start_server(on_client, "127.0.0.1", 0)
+        port = self._server.sockets[0].getsockname()[1]
+
+        launched = await run_in_threadpool(self._launch_worker, port)
+        if launched is not None:
+            return launched
+
+        try:
+            self._reader, self._writer = await asyncio.wait_for(
+                self._connected, timeout=WORKER_CONNECT_TIMEOUT_SECONDS
+            )
+        except asyncio.TimeoutError:
+            return (
+                f"提权录制子进程 {WORKER_CONNECT_TIMEOUT_SECONDS:.0f}s 内没有回连 "
+                "(可能被安全软件拦截, 或 maafw 依赖加载失败)。"
+            )
+        return None
+
+    def _launch_worker(self, port: int) -> str | None:
+        """拉起子进程。提权分支会阻塞到用户答复 UAC, 故整个方法只在线程池里调。
+
+        用 sys.executable 而非 uv run: 提权子进程拿到的是全新环境块, uv 在那里可能重解析。
+        """
+        if not _WORKER_PY.exists():
+            return f"找不到录制子进程脚本: {_WORKER_PY}"
+        argv = [str(_WORKER_PY), "--port", str(port), "--token", self._token]
+        if not self._elevate:
+            try:
+                subprocess.Popen([sys.executable, *argv], cwd=str(_PARENT_DIR))
+            except Exception as exc:  # noqa: BLE001
+                return f"拉起录制子进程失败: {exc}"
+            return None
+        try:
+            import ctypes
+
+            # SW_HIDE: 不给用户弹一个黑控制台; 子进程日志走 socket 回传。
+            ret = int(
+                ctypes.windll.shell32.ShellExecuteW(
+                    None,
+                    "runas",
+                    sys.executable,
+                    " ".join(f'"{arg}"' for arg in argv),
+                    str(_PARENT_DIR),
+                    0,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            return f"拉起提权录制子进程失败: {exc}"
+        if ret == SE_ERR_ACCESSDENIED:
+            return "已取消提权。"
+        if ret <= 32:
+            return f"拉起提权录制子进程失败 (ShellExecuteW={ret})。"
+        return None
+
+    async def send(self, payload: dict[str, Any]) -> None:
+        if self._writer is None:
+            return
+        self._writer.write((json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8"))
+        try:
+            await self._writer.drain()
+        except Exception:  # noqa: BLE001
+            pass
+
+    async def messages(self):
+        """逐条产出子进程消息; socket EOF 时结束。"""
+        if self._reader is None:
+            return
+        while True:
+            try:
+                line = await self._reader.readline()
+            except Exception as exc:  # noqa: BLE001
+                # 连接被重置等: 必须留痕, 否则和正常 EOF 长得一样, 没法查。
+                _log(f"读取录制子进程失败: {exc!r}")
+                return
+            if not line:
+                return
+            try:
+                msg = json.loads(line.decode("utf-8"))
+            except (ValueError, UnicodeDecodeError):
+                continue
+            if isinstance(msg, dict):
+                yield msg
+
+    async def close(self) -> None:
+        # 关 socket 即让子进程自杀 —— 本进程完整性级别更低, kill 不掉它。
+        if self._writer is not None:
+            try:
+                self._writer.close()
+            except Exception:  # noqa: BLE001
+                pass
+        if self._server is not None:
+            self._server.close()
+            try:
+                await self._server.wait_closed()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 # --- FastAPI app ----------------------------------------------------------------------
@@ -411,7 +306,7 @@ def _build_session_config(payload: dict[str, Any]) -> RecordingSessionConfig:
 async def lifespan(_app: FastAPI):
     configure_runtime_env()
     STATIC_DIR.mkdir(parents=True, exist_ok=True)
-    field_manager.ensure_loading()  # 立即在后台开始加载 navmesh
+    navmesh_backend.ensure_loading()  # 立即在后台拉起 agent 并让它读 navmesh
     yield
 
 
@@ -458,39 +353,33 @@ class RouteRequest(BaseModel):
     goal_deck_y: float | None = None
 
 
+def _slot(value: float | None) -> list[float]:
+    """agent 侧用空数组表达"这项不填"(meojson 没有 optional)。"""
+    return [] if value is None else [float(value)]
+
+
 @app.get("/api/load-status")
 async def api_load_status() -> dict[str, Any]:
-    return field_manager.status()
+    return navmesh_backend.status()
 
 
 @app.get("/api/zones")
 async def api_zones() -> Any:
     def _build() -> dict[str, Any]:
-        field = field_manager.get()
+        result = navmesh_backend.query("zones")
+        if not result.get("ok"):
+            raise RuntimeError(result.get("error") or "navmesh 查询失败")
         zones_out: list[dict[str, Any]] = []
-        for zone in field.zones:
-            image = resolve_zone_image(zone.name, MAP_IMAGE_DIR)
+        for zone in result["zones"]:
+            image = resolve_zone_image(zone["name"], MAP_IMAGE_DIR)
             image_path: str | None = None
             if image is not None:
                 try:
                     image_path = image.resolve().relative_to(MAP_IMAGE_DIR.resolve()).as_posix()
                 except Exception:  # noqa: BLE001
                     image_path = None
-            zones_out.append(
-                {
-                    "zone_id": int(zone.zone_id),
-                    "name": zone.name,
-                    "is_tier": bool(field.is_tier(zone.zone_id)),
-                    "geometry_zone_id": int(field.geometry_zone_id(zone.zone_id)),
-                    "width": float(zone.width),
-                    "height": float(zone.height),
-                    "transform": [float(v) for v in zone.transform],
-                    "floor_y": field.floor_y_for(zone.zone_id),  # None 当 <= FLOOR_Y_VALID_MIN
-                    "triangle_count": int(zone.triangle_count),
-                    "has_image": image is not None,
-                    "image_path": image_path,  # 相对 MAP_IMAGE_DIR, 可直接拼到 /basemap/<image_path>
-                }
-            )
+            # 底图是这边的事 (assets 目录布局), 其余字段原样透传 agent
+            zones_out.append({**zone, "has_image": image is not None, "image_path": image_path})
         return {"zones": zones_out}
 
     try:
@@ -502,41 +391,13 @@ async def api_zones() -> Any:
 @app.get("/mesh/{zone_id}")
 async def api_mesh(zone_id: int) -> Response:
     try:
-        data = await run_in_threadpool(field_manager.mesh_bytes, zone_id)
+        data = await run_in_threadpool(navmesh_backend.mesh_bytes, zone_id)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
     if data is None:
         raise HTTPException(status_code=404, detail="该区无三角面 (tier 叠加区或未知区)")
-    prewarm_recast_in_background(zone_id)
+    navmesh_backend.warm(zone_id)
     return Response(content=data, media_type="application/octet-stream")
-
-
-def _offmesh_probe(
-    field: Any,
-    geom_zone_id: int,
-    point: tuple[float, float],
-    snap_radius: float,
-    floor_y: float | None,
-    budget: float | None = None,
-) -> dict[str, Any] | None:
-    """点不在可走网格上吗? 不在的话,最近的网格点在哪、有多远。在网格上则返回 None。
-
-    判据直接用运行时的第一步:以 navmesh_snap_radius 吸附。吸得上,运行时会悄悄吸过去,什么
-    都不会发生(实测 404 个 case:半径内的点无一触发盲走),所以不该报;吸不上,梯子才出手。
-
-    budget 是这个位置上运行时肯盲走的上限(起点 32 / 终点 30),由调用方按角色给——探针本身不
-    知道点是起点还是终点,不填就不下"超不超上限"的判断。
-    """
-    if field.snap(geom_zone_id, point, snap_radius, floor_y) is not None:
-        return None
-    nearest = field.snap(geom_zone_id, point, START_RECOVERY_MAX_BLIND_WALK, floor_y)
-    if nearest is None:
-        return {"distance": None, "nearest": None, "budget": budget}
-    return {
-        "distance": float(nearest.distance),
-        "nearest": [float(nearest.point[0]), float(nearest.point[1])],
-        "budget": budget,
-    }
 
 
 class OffMeshProbeRequest(BaseModel):
@@ -556,24 +417,17 @@ async def api_offmesh_probe(req: OffMeshProbeRequest) -> dict[str, Any]:
 
     def _compute() -> dict[str, Any]:
         try:
-            field = field_manager.get()
+            return navmesh_backend.query(
+                "offmesh_probe",
+                zone_id=req.zone_id,
+                points=req.points,
+                snap_radius=req.snap_radius,
+                floor_y=_slot(req.floor_y),
+            )
         except RuntimeError as exc:
             return {"ok": False, "error": f"navmesh 尚未就绪: {exc}"}
 
-        geom_zone_id = int(field.geometry_zone_id(req.zone_id))
-        results: list[dict[str, Any] | None] = []
-        for raw in req.points:
-            if len(raw) < 2:
-                results.append(None)
-                continue
-            point = (float(raw[0]), float(raw[1]))
-            results.append(_offmesh_probe(field, geom_zone_id, point, req.snap_radius, req.floor_y))
-        return {"ok": True, "results": results}
-
     return await run_in_threadpool(_compute)
-
-
-DECK_PROBE_RADIUS = 0.25  # 一个体素, 与寻路按整格取 span 同量级
 
 
 class DeckProbeRequest(BaseModel):
@@ -585,108 +439,50 @@ class DeckProbeRequest(BaseModel):
 async def api_deck_probe(req: DeckProbeRequest) -> dict[str, Any]:
     """这个坐标底下压着几张可走面? 小地图是二维的,同一个点可能有走廊/天桥/屋顶好几层。
 
-    取该点一个体素(0.25px)内的可走面,按高度归并:两个高度差不超过 DECK_BAND 时寻路的
-    选面判据本来就分不开,所以归成同一张。返回的高度可直接填进 target_deck_y。
+    返回的高度可直接填进 target_deck_y; 只在这边取两位小数, 让它和导出的节点文本对得上。
     """
 
     def _compute() -> dict[str, Any]:
         try:
-            field = field_manager.get()
+            result = navmesh_backend.query("deck_probe", zone_id=req.zone_id, point=req.point)
         except RuntimeError as exc:
             return {"ok": False, "error": f"navmesh 尚未就绪: {exc}"}
-        if len(req.point) < 2:
-            return {"ok": False, "error": "point 需为 [x, y]"}
-
-        geom_zone_id = int(field.geometry_zone_id(req.zone_id))
-        point = (float(req.point[0]), float(req.point[1]))
-        found: list[tuple[float, float, int]] = []  # (height, distance, triangle)
-        for triangle in field._candidate_triangles(geom_zone_id, point, DECK_PROBE_RADIUS):
-            vertices = field._triangle_points(triangle)
-            if _point_in_triangle(point, *vertices):
-                distance = 0.0
-            else:
-                near = _closest_point_on_triangle(point, vertices)
-                distance = math.hypot(near[0] - point[0], near[1] - point[1])
-                if distance > DECK_PROBE_RADIUS:
-                    continue
-            found.append((float(field.triangle_height[triangle]), distance, triangle))
-
-        decks: list[dict[str, Any]] = []
-        for height, distance, triangle in sorted(found, key=lambda f: (f[1], f[2])):
-            if any(abs(d["height"] - height) <= DECK_BAND for d in decks):
-                continue
-            decks.append({
-                "height": round(height, 2),
-                "band": [round(height - DECK_BAND, 2), round(height + DECK_BAND, 2)],
-                "on_surface": distance == 0.0,
-                # 烘焙出来的墙顶/檐口薄片, 不是真地面; 前端灰掉它免得被当成一层
-                "thin": bool(field._is_small_island(triangle)),
-            })
-        decks.sort(key=lambda d: -d["height"])
-        return {"ok": True, "decks": decks}
+        if not result.get("ok"):
+            return result
+        for deck in result["decks"]:
+            deck["height"] = round(deck["height"], 2)
+            deck["band"] = [round(v, 2) for v in deck["band"]]
+        return result
 
     return await run_in_threadpool(_compute)
 
 
 @app.post("/api/route")
 async def api_route(req: RouteRequest) -> dict[str, Any]:
-    """栅格路线; snap_radius 请求参数被忽略 (引擎定死 8.0), blind_* 恒 null, 诊断在 `recast` 键。"""
+    """栅格路线; snap_radius 只用在失败时的离网探针上 (规划自己定死 8.0), blind_* 恒 null。"""
 
     def _compute() -> dict[str, Any]:
         try:
-            field = field_manager.get()
+            result = navmesh_backend.query(
+                "route",
+                zone_id=req.zone_id,
+                start=req.start,
+                goal=req.goal,
+                snap_radius=req.snap_radius,
+                floor_y=_slot(req.floor_y),
+                goal_deck_y=_slot(req.goal_deck_y),
+            )
         except RuntimeError as exc:
             return {"ok": False, "error": f"navmesh 尚未就绪: {exc}"}
-
-        if len(req.start) < 2 or len(req.goal) < 2:
-            return {"ok": False, "error": "start/goal 需为 [x, y]"}
-
-        geom_zone_id = int(field.geometry_zone_id(req.zone_id))
-        zone = field.zone_by_id.get(geom_zone_id)
-        if zone is None:
-            return {"ok": False, "error": f"未知 zone: {req.zone_id}"}
-        start = (float(req.start[0]), float(req.start[1]))
-        goal = (float(req.goal[0]), float(req.goal[1]))
-
-        try:
-            plan = get_recast_engine(field).plan(
-                zone.name, start, goal, req.floor_y,
-                goal_deck_y=req.goal_deck_y,
-            )
-        except (ValueError, FileNotFoundError) as exc:
-            # 失败时带上起终点离网探针, 前端才能标出是哪个点掉在网格外。
-            return {
-                "ok": False,
-                "error": str(exc),
-                "off_mesh": {
-                    "start": _offmesh_probe(
-                        field, geom_zone_id, start, req.snap_radius, req.floor_y,
-                        budget=START_RECOVERY_MAX_BLIND_WALK,
-                    ),
-                    "goal": _offmesh_probe(
-                        field, geom_zone_id, goal, req.snap_radius, req.floor_y,
-                        budget=BLIND_TARGET_MAX_EXTENSION,
-                    ),
-                },
-            }
-
+        if not result.get("ok"):
+            return result  # 已带 error 与起终点各自的离网探针
         return {
             "ok": True,
-            "points": [[float(x), float(y)] for x, y in plan["points"]],
+            "points": result["points"],
             "segment_breaks": [],
-            "cost": float(plan["length"]),
+            "cost": result["cost"],
             "blind_start": None,
             "blind_target": None,
-            "recast": {
-                "warn": plan["warn"],
-                "wall_cross": plan["wall_cross"],
-                "offmesh_walk": plan["offmesh_walk"],
-                "offmesh_lay": plan["offmesh_lay"],
-                "metrics": plan["metrics"],
-                "snap": plan["snap"],
-                "window": plan["window"],
-                "timing": plan["timing"],
-            },
         }
 
     return await run_in_threadpool(_compute)
@@ -1172,6 +968,76 @@ async def favicon() -> Response:
     return Response(status_code=204)
 
 
+def _recording_worker_mode() -> str:
+    """本次录制走哪条路: 'elevate' 提权子进程 / 'plain' 不提权子进程 / 'inline' 进程内。
+
+    默认只在 Windows 非管理员时提权 —— 已是管理员或非 Windows 时进程内录制本来就好用,
+    没必要多一跳。MAPNAV_RECORD_WORKER 可强制: plain (不提权起子进程, 用于单独验证
+    IPC 链路) / off (强制进程内)。
+    """
+    forced = (os.environ.get("MAPNAV_RECORD_WORKER") or "").strip().lower()
+    if forced == "plain":
+        return "plain"
+    if forced in ("off", "inline"):
+        return "inline"
+    try:
+        # macOS 的输入监控提示也靠这一调用, 别按平台短路掉。
+        privileged = key_listener.ensure_privileges()
+    except Exception as exc:  # noqa: BLE001
+        _log(f"ensure_privileges 异常(按已有权限处理): {exc}")
+        return "inline"
+    if sys.platform != "win32":
+        return "inline"
+    return "inline" if privileged else "elevate"
+
+
+async def _relay_elevated_recording(websocket: WebSocket, bridge: ElevatedRecordingBridge) -> None:
+    """录制子进程 <-> 浏览器 双向转发, 直到录制出结果或任一端断开。
+
+    子进程发的就是前端协议本身, 除 log (只进终端) 外原样转发。
+    """
+
+    async def pump_worker() -> str:
+        async for msg in bridge.messages():
+            kind = msg.get("type")
+            if kind == "log":
+                _log(f"[录制子进程] {msg.get('message', '')}")
+                continue
+            await websocket.send_json(msg)
+            if kind in ("finished", "error"):
+                return str(kind)
+        return "eof"
+
+    async def pump_client() -> str:
+        try:
+            while True:
+                msg = await websocket.receive_json()
+                if isinstance(msg, dict) and msg.get("type") == "stop":
+                    await bridge.send({"type": "stop"})
+        except Exception:  # noqa: BLE001
+            return "disconnected"
+
+    worker_task = asyncio.create_task(pump_worker())
+    client_task = asyncio.create_task(pump_client())
+    try:
+        done, pending = await asyncio.wait(
+            {worker_task, client_task}, return_when=asyncio.FIRST_COMPLETED
+        )
+        for task in pending:
+            task.cancel()
+        for task in done:
+            task.exception()  # 取一下, 免得变成 "exception never retrieved"
+        if worker_task in done and worker_task.exception() is None:
+            if worker_task.result() == "eof":
+                # 子进程没给结果就断了 (崩溃/被安全软件杀), 前端得复位。
+                await websocket.send_json(
+                    {"type": "error", "message": "提权录制子进程意外退出 (未返回录制结果)。"}
+                )
+    finally:
+        worker_task.cancel()
+        client_task.cancel()
+
+
 @app.websocket("/ws/record")
 async def ws_record(websocket: WebSocket) -> None:
     await websocket.accept()
@@ -1185,6 +1051,7 @@ async def ws_record(websocket: WebSocket) -> None:
             pass
 
     service: RecordingService | None = None
+    bridge: ElevatedRecordingBridge | None = None
     acquired = False
     try:
         first = await websocket.receive_json()
@@ -1194,29 +1061,40 @@ async def ws_record(websocket: WebSocket) -> None:
         if not isinstance(payload, dict):
             payload = {}
 
+        if not _recording_lock.acquire(blocking=False):
+            await websocket.send_json({"type": "error", "message": "已有录制会话进行中, 请先停止。"})
+            return
+        acquired = True
+
+        # 权限判定仅在录制开始时做 (绝不在服务启动时, 以免顶掉纯编辑用户)。
+        mode = _recording_worker_mode()
+        if mode != "inline":
+            await websocket.send_json(
+                {"type": "status", "text": "● 正在启动录制进程 (需要授权提权)…", "color": "#f59e0b"}
+            )
+            bridge = ElevatedRecordingBridge(elevate=(mode == "elevate"))
+            failure = await bridge.spawn()
+            if failure is None:
+                # maafw 由子进程自己加载, 本进程不碰 (避免两个进程各开一套原生运行时)。
+                await bridge.send({"type": "start", "config": payload})
+                await _relay_elevated_recording(websocket, bridge)
+                return
+            await bridge.close()
+            bridge = None
+            # 提权失败/被拒不能让录制彻底不可用 —— 退回进程内录制, 只是热键可能收不到。
+            warning = (
+                f"{failure} 已退回本进程录制: 游戏窗口在前台时 G/X 热键可能收不到按键。"
+            )
+            _log(warning)
+            await websocket.send_json({"type": "status", "text": warning, "color": "#f59e0b"})
+            await websocket.send_json({"type": "locator", "text": warning})
+
         runtime = get_runtime()
         if runtime is None:
             await websocket.send_json(
                 {"type": "error", "message": "maafw 运行时不可用, 无法录制 (缺少 maafw 依赖或初始化失败)。"}
             )
             return
-
-        # 权限检查仅在录制开始时进行 (绝不在服务启动时, 以免顶掉纯编辑用户)。
-        try:
-            privileges_ok = key_listener.ensure_privileges()
-        except Exception as exc:  # noqa: BLE001
-            _log(f"ensure_privileges 异常(放行): {exc}")
-            privileges_ok = True
-        if not privileges_ok:
-            await websocket.send_json(
-                {"type": "error", "message": "缺少全局按键监听所需权限 (需管理员/输入监控授权)。"}
-            )
-            return
-
-        if not _recording_lock.acquire(blocking=False):
-            await websocket.send_json({"type": "error", "message": "已有录制会话进行中, 请先停止。"})
-            return
-        acquired = True
 
         stop_event = asyncio.Event()
 
@@ -1246,7 +1124,7 @@ async def ws_record(websocket: WebSocket) -> None:
             )
 
         def on_clipboard(coord: str, status: str) -> None:
-            _copy_to_clipboard(coord)  # 后端直接写系统剪贴板 (游戏持有焦点)
+            copy_to_clipboard(coord, log=_log)  # 后端直接写系统剪贴板 (游戏持有焦点)
             push({"type": "toast", "coord": coord, "status": status})
 
         def on_force_waypoint(x: float, y: float, zone: str) -> None:
@@ -1262,7 +1140,7 @@ async def ws_record(websocket: WebSocket) -> None:
             on_force_waypoint=on_force_waypoint,
             on_live_position=on_live_position,
         )
-        service.start(_build_session_config(payload))
+        service.start(session_config_from_payload(payload))
 
         async def read_client():
             try:
@@ -1292,6 +1170,11 @@ async def ws_record(websocket: WebSocket) -> None:
         if service is not None:
             try:
                 service.stop()
+            except Exception:  # noqa: BLE001
+                pass
+        if bridge is not None:
+            try:
+                await bridge.close()  # 关 socket = 子进程自杀 (提权后 kill 不掉它)
             except Exception:  # noqa: BLE001
                 pass
         if acquired:
@@ -1400,7 +1283,7 @@ async def api_locate_once(payload: dict[str, Any] = Body(default_factory=dict)) 
             "playcover": {"address": current.playcover_address, "uuid": current.playcover_uuid},
             "wlroots": {"wlr_socket_path": current.wlroots_socket_path},
         }
-    session_config = _build_session_config(cfg_payload)
+    session_config = session_config_from_payload(cfg_payload)
 
     try:
         res = await run_in_threadpool(do_locate_once, runtime, session_config)

@@ -84,28 +84,23 @@ inline std::optional<GridType> ParseGridType(std::string_view name)
 
 inline json::value RectToJson(const cv::Rect& rect)
 {
-    return json::object {
-        { "x", rect.x },
-        { "y", rect.y },
-        { "width", rect.width },
-        { "height", rect.height },
-    };
+    return json::array { rect.x, rect.y, rect.width, rect.height };
 }
 
 inline bool RectFromJson(const json::value& value, cv::Rect& rect)
 {
-    if (!value.is_object()) {
+    if (!value.is_array() || value.as_array().size() != 4) {
         return false;
     }
-    const auto& object = value.as_object();
-    const auto read = [&object](const char* key, int& output) {
-        if (!object.contains(key) || !object.at(key).is_number()) {
+    const auto& values = value.as_array();
+    const auto read = [&values](std::size_t index, int& output) {
+        if (!values.at(index).is_number()) {
             return false;
         }
-        output = object.at(key).as_integer();
+        output = values.at(index).as_integer();
         return true;
     };
-    return read("x", rect.x) && read("y", rect.y) && read("width", rect.width) && read("height", rect.height);
+    return read(0, rect.x) && read(1, rect.y) && read(2, rect.width) && read(3, rect.height);
 }
 
 struct ItemInfo
@@ -166,6 +161,7 @@ struct CandidateFilter
 {
     std::vector<std::string> item_ids;
     std::vector<std::string> item_filters;
+    std::vector<std::string> item_recheck_filters;
 };
 
 struct RecognitionRequest
@@ -174,6 +170,8 @@ struct RecognitionRequest
     GridType grid_type = GridType::Transfer;
     cv::Rect roi;
     CandidateFilter candidates;
+    // Custom 入口根据 MaaContext 填入的内部控制器比例；空值表示离线调用需从图像推断。
+    std::optional<double> grid_scale_hint;
     // 最终接受匹配的默认分数；调高减少误识别，调低提高弱图标召回。
     double threshold = 0.85;
     // 首轮分数达到该值才进行亚像素细化；调高减少计算量，调低增加细化候选。
@@ -187,7 +185,7 @@ struct RecognitionRequest
 struct RecognitionResult
 {
     // 公开 detail JSON 的结构版本，字段发生不兼容变化时递增。
-    int detail_version = 1;
+    int detail_version = 2;
     bool matched = false;
     // 结果对象的构造占位值；has_grid_type=false 时不会序列化该字段。
     GridType grid_type = GridType::Transfer;

@@ -127,7 +127,7 @@ MapNavigator 是用于 C++ MapNavigator 模块使用的地图路径录制与编�
 1. 打开工具，切换到 `断言模式` 页签。
 2. 点击 `选择断言底图与层级`，选择目标 `zone`。
 3. 在底图上按住左键拖拽，框出一个矩形区域。
-4. 选择复制完整断言节点或仅复制环境监测 `routes.json` 使用的 `MapAssert` 坐标，再点击复制按钮。
+4. 选择复制完整断言节点或仅复制环境监测 `routes.json` 使用的 `NavAssert` 坐标，再点击复制按钮。
 
 ### 导出格式
 
@@ -178,6 +178,8 @@ assets/resource/model/map/navmesh/base.nav.gz
 assets/resource/model/map/navmesh/base.nav      # optional local fallback
 ```
 
+寻路要求包内带预烘格图段（`BGRD`，见 BaseNav 版本 4）；没有这一段的包仍可显示网格与底图，但点不出线路。
+
 可选 zone：
 
 ```text
@@ -201,9 +203,7 @@ dung01
 }
 ```
 
-`NAVMESH` 的 `.nav` 区域由运行时根据当前定位自动推断；复制结果不需要填写 `zone_id` / `navmesh_zone`。
-
-复制内容可切换为 `仅坐标（MapTarget）`，此时只复制最后一个目标点的 `[x, y]`，可直接粘贴到环境监测 `routes.json` 的 `MapTarget`。分层底图的状态栏会同时提示应填写的 `MapTargetTier`。
+`NAVMESH` 的 `.nav` 区域由运行时根据当前定位自动推断；复制结果不需要填写 `zone_id` / `navmesh_zone`。复制结果可直接作为环境监测 `routes.json` 中 `NavPath` 的 NAVMESH 动作。
 
 `.nav` 只连接 GLB 自身共享/重叠边，以及同高度的小距离 component bridge；不会为了跨 level 自动补 portal 或 drop link。游戏本身分离的 level 暂保持不可达。
 
@@ -244,7 +244,9 @@ uv run main.py
 - `connectors.py`: 录制连接器抽象，以及各 controller 建连实现。
 - `settings_store.py`: 本地用户连接偏好持久化。
 - `recording_service.py`: Maa Agent 录制线程与数据采集，不直接耦合具体 controller 类型。
-- `basenav_preview.py`: BaseNav `.nav` 加载与 A\* 路线预览计算。
+- `record_worker.py`: 提权录制子进程。Windows 非管理员时录制跑在这里，与后端用回连 socket 通信（服务自身不重启、不提权）。
+- `clipboard.py`: 系统剪贴板写入（G 热键复制坐标）。
+- `navmesh_backend.py`: navmesh 查询后端，把 cpp-algo agent 当作常驻查询进程；几何解码、吸附、路线都在 agent 里算。
 - `json_import.py`: JSON/JSONC 导入解析与动作语义校验。
 - `maptracker_compat.py`: `MapTracker*` 节点到 Base 坐标系的兼容转换表。
 - `key_listener.py`: 录制期间的全局按键监听与系统权限检查。

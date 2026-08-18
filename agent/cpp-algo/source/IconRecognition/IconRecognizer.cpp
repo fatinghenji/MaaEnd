@@ -2,16 +2,19 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <memory>
 #include <set>
 #include <stdexcept>
 #include <string_view>
 #include <tuple>
+#include <unordered_map>
 #include <unordered_set>
 
 #include <MaaUtils/Logger.h>
 
+#include "detail/EdgeOcclusion.h"
 #include "detail/ForegroundTexture.h"
 #include "detail/GridDetector.h"
 #include "detail/GridProfiles.h"
@@ -49,7 +52,7 @@ double ElapsedMilliseconds(PerformanceClock::time_point started_at)
     return std::chrono::duration<double, std::milli>(PerformanceClock::now() - started_at).count();
 }
 
-const std::vector<std::string>& DefaultFilters(GridType type)
+const std::vector<std::string>& DefaultItemFiltersImpl(GridType type)
 {
     // 背包、存取站、送货和 single ROI 默认覆盖普通仓库的全部分类。
     static const std::vector<std::string> normal { "Normal:*" };
@@ -59,8 +62,8 @@ const std::vector<std::string>& DefaultFilters(GridType type)
     static const std::vector<std::string> valuables { "ValuableDepot:*" };
     // 信用交易所只展示特殊商品和独立存储的资源。
     static const std::vector<std::string> credit { "ValuableDepot:SpecialItem", "Isolate:*" };
-    // 多个游戏功能共用奖励界面；未指定 item_filters 时，仅识别独立资源。
-    static const std::vector<std::string> rewards { "Isolate:*" };
+    // 多个游戏功能共用奖励界面；默认同时覆盖独立资源、培养素材和珍贵消耗品。
+    static const std::vector<std::string> rewards { "Isolate:*", "ValuableDepot:*" };
     switch (type) {
     case GridType::Trade:
         return trade;
@@ -79,18 +82,31 @@ const std::vector<std::string>& DefaultFilters(GridType type)
     return normal;
 }
 
-bool MatchesFilter(const detail::TemplateRecord& record, std::string_view filter)
+std::pair<std::string_view, std::string_view> ParseFilter(std::string_view filter, std::string_view field)
 {
     const auto separator = filter.find(':');
     if (separator == std::string_view::npos || filter.find(':', separator + 1) != std::string_view::npos) {
-        throw std::invalid_argument("item_filters must use storageKind:categoryType");
+        throw std::invalid_argument(std::string(field) + " must use storageKind:categoryType");
     }
     const std::string_view storage = filter.substr(0, separator);
     const std::string_view category = filter.substr(separator + 1);
     if (storage.empty() || category.empty()) {
-        throw std::invalid_argument("item_filters must use non-empty storageKind:categoryType");
+        throw std::invalid_argument(std::string(field) + " must use non-empty storageKind:categoryType");
     }
+    return { storage, category };
+}
+
+bool MatchesFilter(const detail::TemplateRecord& record, std::string_view filter)
+{
+    const auto [storage, category] = ParseFilter(filter, "item_filters");
     return storage == record.storage_kind && (category == "*" || category == record.category_type);
+}
+
+void ValidateFilters(const std::vector<std::string>& filters, std::string_view field)
+{
+    for (const auto& filter : filters) {
+        static_cast<void>(ParseFilter(filter, field));
+    }
 }
 
 std::vector<detail::PreparedTemplate> SelectTemplates(
@@ -140,20 +156,33 @@ void ValidateThresholds(double accept, double subpixel)
     }
 }
 
-cv::Rect SlotFor(GridType type, const detail::GridCell& cell)
+int TemplateSizeFor(GridType type, double grid_scale)
 {
+    int baseline_size = detail::ProfileFor(type).cell_size;
     if (type == GridType::Trade) {
-        const int inset = (cell.cell_box.width - kTradeTemplateSize) / 2;
-        return cv::Rect(cell.cell_box.x + inset, cell.cell_box.y + inset, kTradeTemplateSize, kTradeTemplateSize);
+        baseline_size = kTradeTemplateSize;
+    }
+    else if (type == GridType::CreditTrade) {
+        baseline_size = kCreditTradeTemplateSize;
+    }
+    return std::max(1, cvRound(baseline_size * grid_scale));
+}
+
+cv::Rect SlotFor(GridType type, const detail::GridCell& cell, double grid_scale)
+{
+    const int template_size = TemplateSizeFor(type, grid_scale);
+    if (type == GridType::Trade) {
+        const int inset = (cell.cell_box.width - template_size) / 2;
+        return cv::Rect(cell.cell_box.x + inset, cell.cell_box.y + inset, template_size, template_size);
     }
     if (type == GridType::CreditTrade) {
         return cv::Rect(
-            cell.cell_box.x + kCreditTradeOffsetX,
-            cell.cell_box.y + kCreditTradeOffsetY,
-            kCreditTradeTemplateSize,
-            kCreditTradeTemplateSize);
+            cell.cell_box.x + cvRound(kCreditTradeOffsetX * grid_scale),
+            cell.cell_box.y + cvRound(kCreditTradeOffsetY * grid_scale),
+            template_size,
+            template_size);
     }
-    return cell.cell_box;
+    return cv::Rect(cell.cell_box.x, cell.cell_box.y, template_size, template_size);
 }
 
 std::vector<detail::PreparedTemplate>
@@ -387,6 +416,19 @@ SlotRanking RankSlot(
     return ranking;
 }
 
+bool ValidateCandidateCell(
+    const cv::Mat& image,
+    const cv::Rect& cell_box,
+    std::string_view expected_item_id,
+    const std::vector<detail::PreparedTemplate>& templates,
+    double threshold,
+    double subpixel_threshold)
+{
+    const SlotRanking ranking =
+        RankSlot(image, cell_box, templates, std::nullopt, threshold, subpixel_threshold, kGridSearchRadius, nullptr);
+    return ranking.best.diagnostics.score >= threshold && templates[ranking.best.template_index].record.item_id == expected_item_id;
+}
+
 std::string ActiveMaskKind(
     GridType type,
     const std::vector<detail::PreparedTemplate>& selected,
@@ -418,7 +460,20 @@ ItemInfo ItemFromTemplate(const detail::PreparedTemplate& templ)
     };
 }
 
+void ValidateRecognitionRoi(const cv::Mat& image, const cv::Rect& roi)
+{
+    const cv::Rect bounds(0, 0, image.cols, image.rows);
+    if (roi.width <= 0 || roi.height <= 0 || (roi & bounds) != roi) {
+        throw std::invalid_argument("IconRecognition ROI must be positive and fully inside the input image");
+    }
+}
+
 } // namespace
+
+const std::vector<std::string>& detail::DefaultItemFilters(GridType type)
+{
+    return DefaultItemFiltersImpl(type);
+}
 
 class IconRecognizer::Impl
 {
@@ -447,16 +502,9 @@ public:
         return result;
     }
 
-    const std::vector<detail::PreparedTemplate>& TemplatesFor(GridType type) const
+    const std::vector<detail::PreparedTemplate>& TemplatesFor(GridType type, double grid_scale) const
     {
-        int target_size = detail::ProfileFor(type).cell_size;
-        if (type == GridType::Trade) {
-            target_size = kTradeTemplateSize;
-        }
-        if (type == GridType::CreditTrade) {
-            target_size = kCreditTradeTemplateSize;
-        }
-        return catalog_.load(target_size);
+        return catalog_.load(TemplateSizeFor(type, grid_scale));
     }
 
     const std::vector<detail::PreparedTemplate>& RoiTemplates(int target_size) const { return catalog_.load(target_size); }
@@ -472,7 +520,9 @@ public:
                     static_cast<void>(RoiTemplates(request.roi.width));
                 }
                 else {
-                    static_cast<void>(TemplatesFor(request.grid_type));
+                    for (const double grid_scale : detail::kSupportedControllerGridScales) {
+                        static_cast<void>(TemplatesFor(request.grid_type, grid_scale));
+                    }
                 }
             }
             return true;
@@ -486,6 +536,25 @@ public:
     RecognitionResult recognize(const cv::Mat& image, const RecognitionRequest& request) const
     {
         try {
+            if (image.empty()) {
+                return Error(request.roi, request.grid_type, "invalid_image", "Input image is empty");
+            }
+            ValidateRecognitionRoi(image, request.roi);
+            return recognize_original(image, request);
+        }
+        catch (const std::invalid_argument& error) {
+            LogError << "IconRecognizer recognition rejected invalid input" << VAR(error.what());
+            return Error(request.roi, request.grid_type, "invalid_argument", error.what());
+        }
+        catch (const std::exception& error) {
+            LogError << "IconRecognizer recognition failed" << VAR(error.what());
+            return Error(request.roi, request.grid_type, "exception", error.what());
+        }
+    }
+
+    RecognitionResult recognize_original(const cv::Mat& image, const RecognitionRequest& request) const
+    {
+        try {
             const auto recognition_started = request.debug ? PerformanceClock::now() : PerformanceClock::time_point {};
             std::optional<detail::RecognitionPerformanceDiagnostics> performance;
             if (request.debug) {
@@ -496,10 +565,15 @@ public:
                 return Error(request.roi, request.grid_type, "invalid_image", "Input image is empty");
             }
             ValidateThresholds(request.threshold, request.subpixel_threshold);
+            const bool recheck_enabled = !request.candidates.item_ids.empty() && !request.candidates.item_recheck_filters.empty();
+            if (recheck_enabled) {
+                ValidateFilters(request.candidates.item_recheck_filters, "item_recheck_filters");
+            }
             const bool single_roi = request.grid_type == GridType::SingleRoi;
             std::vector<detail::GridCell> cells;
             std::vector<detail::GridLayout> detected_grids;
             std::vector<detail::PreparedTemplate> selected;
+            double grid_scale = detail::kWin32ControllerGridScale;
             if (single_roi) {
                 if (request.roi.width <= 0 || request.roi.width != request.roi.height) {
                     throw std::invalid_argument("single_roi must be a positive square");
@@ -510,21 +584,31 @@ public:
                 }
                 cells.push_back(detail::GridCell { .cell_box = request.roi });
                 const auto selection_started = performance ? PerformanceClock::now() : PerformanceClock::time_point {};
-                selected = SelectTemplates(RoiTemplates(request.roi.width), request.candidates, DefaultFilters(request.grid_type));
+                selected =
+                    SelectTemplates(RoiTemplates(request.roi.width), request.candidates, detail::DefaultItemFilters(request.grid_type));
                 if (performance) {
                     performance->template_selection_ms += ElapsedMilliseconds(selection_started);
                 }
             }
             else {
                 const auto detection_started = performance ? PerformanceClock::now() : PerformanceClock::time_point {};
-                const detail::GridDetection detection = detail::DetectGrid(image, request.grid_type, request.roi);
+                const detail::GridDetection detection = detail::DetectGrid(image, request.grid_type, request.roi, request.grid_scale_hint);
                 if (performance) {
                     performance->grid_detection_ms += ElapsedMilliseconds(detection_started);
                 }
+                if (detection.cells.empty()) {
+                    const std::string message =
+                        detection.failure_message.empty() ? "Grid detection found no formal cells" : detection.failure_message;
+                    return Error(request.roi, request.grid_type, "grid_detection_failed", message);
+                }
                 cells = detection.cells;
                 detected_grids = detection.grids;
+                grid_scale = detection.grid_scale;
                 const auto selection_started = performance ? PerformanceClock::now() : PerformanceClock::time_point {};
-                selected = SelectTemplates(TemplatesFor(request.grid_type), request.candidates, DefaultFilters(request.grid_type));
+                selected = SelectTemplates(
+                    TemplatesFor(request.grid_type, grid_scale),
+                    request.candidates,
+                    detail::DefaultItemFilters(request.grid_type));
                 if (performance) {
                     performance->template_selection_ms += ElapsedMilliseconds(selection_started);
                 }
@@ -539,37 +623,86 @@ public:
                 }
             }
             for (const auto& cell : cells) {
-                const cv::Rect slot = single_roi ? cell.cell_box : SlotFor(request.grid_type, cell);
+                const cv::Rect slot = single_roi ? cell.cell_box : SlotFor(request.grid_type, cell, grid_scale);
                 const auto active_started = performance ? PerformanceClock::now() : PerformanceClock::time_point {};
                 const auto active = single_roi ? selected : ActiveTemplates(image, request.grid_type, slot, selected);
                 if (performance) {
                     performance->active_templates_ms += ElapsedMilliseconds(active_started);
                 }
                 const auto rarity_started = performance ? PerformanceClock::now() : PerformanceClock::time_point {};
-                const auto rarity = single_roi ? detail::RarityResult {} : detail::ClassifyRarity(image, slot);
+                const auto rarity = single_roi ? detail::RarityResult {} : detail::ClassifyRarity(image, slot, grid_scale);
                 if (performance) {
                     performance->rarity_classification_ms += ElapsedMilliseconds(rarity_started);
                 }
-                const SlotRanking ranking = RankSlot(
+                SlotRanking ranking = RankSlot(
                     image,
                     slot,
                     active,
                     rarity.rarity,
                     request.threshold,
                     request.subpixel_threshold,
-                    single_roi ? 0 : kGridSearchRadius,
+                    std::max(1, cvRound(kGridSearchRadius * grid_scale)),
                     performance_ptr);
-                const auto& best = ranking.best;
-                const auto& templ = active[best.template_index];
                 const auto texture_started = performance ? PerformanceClock::now() : PerformanceClock::time_point {};
                 const auto foreground_texture =
                     single_roi ? std::optional<double> {} : detail::ForegroundTextureScore(image, cell.cell_box, request.grid_type);
                 if (performance) {
                     performance->foreground_texture_ms += ElapsedMilliseconds(texture_started);
                 }
+                const bool low_texture = !single_roi && detail::IsLowTexture(image, cell.cell_box, request.grid_type);
+                std::vector<detail::PreparedTemplate> edge_active;
+                std::optional<detail::EdgeOcclusion> edge_occlusion;
+                bool edge_recovery_used = false;
+                if (detail::ShouldAttemptEdgeOcclusionRecovery(
+                        request.grid_type,
+                        ranking.best.diagnostics.score,
+                        request.threshold,
+                        request.subpixel_threshold,
+                        low_texture)) {
+                    const auto& original_template = active[ranking.best.template_index];
+                    edge_occlusion = detail::DetectEdgeOcclusion(
+                        image,
+                        cv::Rect(ranking.best.diagnostics.position, original_template.image.size()),
+                        original_template,
+                        ranking.best.phase);
+                    if (edge_occlusion) {
+                        edge_active = active;
+                        for (auto& templ : edge_active) {
+                            templ.mask = templ.mask.clone();
+                            detail::ApplyEdgeOcclusionMask(templ.mask, *edge_occlusion);
+                        }
+                        SlotRanking recovered = RankSlot(
+                            image,
+                            slot,
+                            edge_active,
+                            rarity.rarity,
+                            request.threshold,
+                            request.subpixel_threshold,
+                            std::max(1, cvRound(kGridSearchRadius * grid_scale)),
+                            performance_ptr);
+                        const std::optional<double> recovered_margin =
+                            recovered.ranked.size() > 1
+                                ? std::optional<double>(recovered.best.diagnostics.score - recovered.ranked[1].diagnostics.score)
+                                : std::nullopt;
+                        if (detail::ShouldAcceptEdgeOcclusionRecovery(
+                                ranking.best.template_index,
+                                recovered.best.template_index,
+                                recovered.best.diagnostics.score,
+                                recovered_margin,
+                                request.threshold)) {
+                            ranking = std::move(recovered);
+                            edge_recovery_used = true;
+                        }
+                    }
+                }
+                const auto& effective_active = edge_recovery_used ? edge_active : active;
+                const auto& best = ranking.best;
+                const auto& templ = effective_active[best.template_index];
+                const std::optional<double> top2_margin =
+                    ranking.ranked.size() > 1 ? std::optional<double>(best.diagnostics.score - ranking.ranked[1].diagnostics.score)
+                                              : std::nullopt;
                 const auto low_texture_started = performance ? PerformanceClock::now() : PerformanceClock::time_point {};
-                const bool texture_rejected = !single_roi && best.diagnostics.score >= request.threshold
-                                              && detail::IsLowTexture(image, cell.cell_box, request.grid_type);
+                const bool texture_rejected = best.diagnostics.score >= request.threshold && low_texture;
                 if (performance) {
                     performance->foreground_texture_ms += ElapsedMilliseconds(low_texture_started);
                 }
@@ -577,10 +710,9 @@ public:
                 const bool accepted = best.diagnostics.score >= request.threshold && !texture_rejected;
                 std::optional<std::string> rejected_reason;
                 if (!accepted) {
-                    rejected_reason = texture_rejected
-                                          ? "low-foreground-texture"
-                                          : (best.diagnostics.score < request.subpixel_threshold ? "below-subpixel-threshold"
-                                                                                                 : "below-accept-threshold-after-fallback");
+                    rejected_reason = texture_rejected ? "low-foreground-texture"
+                                                       : (best.diagnostics.score < request.subpixel_threshold ? "below-subpixel-threshold"
+                                                                                                              : "below-accept-threshold");
                 }
                 result.diagnostics->cells.push_back(detail::CellRecognitionDiagnostics {
                     .cell_box = cell.cell_box,
@@ -588,19 +720,27 @@ public:
                     .best_candidate_id = templ.record.item_id,
                     .baseline_score = ranking.baseline_score,
                     .score = best.diagnostics.score,
-                    .top2_margin = ranking.ranked.size() > 1
-                                       ? std::optional<double>(best.diagnostics.score - ranking.ranked[1].diagnostics.score)
-                                       : std::nullopt,
+                    .top2_margin = top2_margin,
                     .candidate_count = ranking.ranked.size(),
-                    .fallback_used = ranking.fallback_used,
+                    .fallback_used = ranking.fallback_used || edge_recovery_used,
                     .best_phase = cv::Point2d(best.phase.x, best.phase.y),
                     .rejected_reason = rejected_reason,
                     .foreground_texture = foreground_texture,
                     .rarity = single_roi && accepted ? std::optional<int>(templ.record.rarity) : rarity.rarity,
                     .rarity_coverage = single_roi ? 0.0 : rarity.coverage,
                     .rarity_row_offset = single_roi ? std::optional<int> {} : rarity.row_offset,
-                    .mask_kind = single_roi ? (templ.composite ? "composite_union" : "lower_extended")
-                                            : ActiveMaskKind(request.grid_type, selected, active),
+                    .mask_kind = single_roi
+                                     ? (templ.composite ? "composite_union" : "lower_extended")
+                                     : ActiveMaskKind(request.grid_type, selected, active)
+                                           + (edge_recovery_used
+                                                  ? (edge_occlusion->side == detail::EdgeOcclusionSide::Top ? "+edge_top" : "+edge_bottom")
+                                                  : ""),
+                    .edge_occlusion_side = edge_recovery_used ? std::optional<std::string>(
+                                               edge_occlusion->side == detail::EdgeOcclusionSide::Top ? "top" : "bottom")
+                                                              : std::nullopt,
+                    .edge_occlusion_cutoff = edge_recovery_used ? std::optional<int>(edge_occlusion->cutoff) : std::nullopt,
+                    .edge_occlusion_residual_ratio =
+                        edge_recovery_used ? std::optional<double>(edge_occlusion->residual_ratio) : std::nullopt,
                     .row = single_roi ? std::optional<int> {} : std::optional<int>(cell.row),
                     .column = single_roi ? std::optional<int> {} : std::optional<int>(cell.column),
                 });
@@ -624,7 +764,40 @@ public:
             }
             const auto sort_started = performance ? PerformanceClock::now() : PerformanceClock::time_point {};
             std::ranges::stable_sort(result.matches, ItemMatchLess {});
-            if (request.deduplicate) {
+            if (recheck_enabled) {
+                const auto candidates = std::move(result.matches);
+                result.matches.clear();
+                CandidateFilter recheck_candidates;
+                recheck_candidates.item_filters = request.candidates.item_recheck_filters;
+                std::unordered_map<int, std::vector<detail::PreparedTemplate>> recheck_templates_by_size;
+                std::unordered_set<std::string> rechecked_item_ids;
+                for (const auto& candidate : candidates) {
+                    if (request.deduplicate && rechecked_item_ids.contains(candidate.item.item_id)) {
+                        continue;
+                    }
+                    auto [templates, inserted] = recheck_templates_by_size.try_emplace(candidate.cell_box.width);
+                    if (inserted) {
+                        templates->second = SelectTemplates(
+                            RoiTemplates(candidate.cell_box.width),
+                            recheck_candidates,
+                            detail::DefaultItemFilters(GridType::SingleRoi));
+                    }
+                    const bool valid = ValidateCandidateCell(
+                        image,
+                        candidate.cell_box,
+                        candidate.item.item_id,
+                        templates->second,
+                        request.threshold,
+                        request.subpixel_threshold);
+                    if (valid) {
+                        result.matches.push_back(candidate);
+                        if (request.deduplicate) {
+                            rechecked_item_ids.insert(candidate.item.item_id);
+                        }
+                    }
+                }
+            }
+            if (request.deduplicate && !recheck_enabled) {
                 DeduplicateMatches(result.matches);
             }
             if (performance) {
@@ -641,6 +814,10 @@ public:
                 LogInfo << "IconRecognition debug performance" << VAR(*result.diagnostics->performance);
             }
             return result;
+        }
+        catch (const std::invalid_argument& error) {
+            LogError << "IconRecognizer recognition rejected invalid input" << VAR(error.what());
+            return Error(request.roi, request.grid_type, "invalid_argument", error.what());
         }
         catch (const std::exception& error) {
             LogError << "IconRecognizer recognition failed" << VAR(error.what());

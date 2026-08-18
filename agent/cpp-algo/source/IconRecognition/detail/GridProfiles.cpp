@@ -2,12 +2,14 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <map>
 #include <optional>
 #include <set>
 #include <stdexcept>
 #include <tuple>
+#include <vector>
 
 #include "GridFeatures.h"
 #include "GridGeometry.h"
@@ -31,6 +33,10 @@ constexpr int kTransferDiscoveryMinimumRows = 3;
 constexpr int kTransferMaximumColumns = 8;
 // 右侧面板分区的 720p 参考宽度，用于缺少双候选时构造保守区域。
 constexpr int kTransferRightPanelWidth = 398;
+// 便捷存取站左面板在归一化 720p full ROI 中的搜索宽度；覆盖 Win32/ADB 左侧四列，并避开中间传送按钮。
+constexpr int kPortStoragerLeftPanelWidth = 330;
+// 便捷存取站右面板约从归一化 full ROI 的 42% 处开始；调低会混入中间 UI，调高会裁掉首列结构。
+constexpr double kPortStoragerRightPanelStartRatio = 0.42;
 // 局部峰相对全图最大响应的最低比例；调高抑制弱噪声，调低提高弱格框召回。
 constexpr double kLocalPeakMaximumRatio = 0.22;
 // 局部峰需达到的正响应百分位；调高只保留尖峰，调低会保留更多纹理峰。
@@ -100,21 +106,21 @@ constexpr GridProfile kPortStoragerGridProfile {
     .min_columns = 3,
     .min_rows = 3,
 };
-// 贵重品库按 96px cell、103.5px 双轴 pitch 和至少 7x4 的首屏布局标定。
+// 贵重品库按 96px cell、103.5px 双轴 pitch 标定；ADB 首屏为六列，Win32 宽 ROI 仍由结构证据扩展到七列。
 constexpr GridProfile kValuablesGridProfile {
     .cell_size = 96,
     .pitch_x = 103.5,
     .pitch_y = 103.5,
-    .min_columns = 7,
+    .min_columns = 6,
     .min_rows = 4,
 };
-// 送货界面按 64px cell、73.6x112px pitch 和至少 4x3 布局标定。
+// 送货界面按 64px cell、73.6x112px pitch 标定；底部操作栏可能只留下两行完整卡片。
 constexpr GridProfile kShipmentGridProfile {
     .cell_size = 64,
     .pitch_x = 73.6,
     .pitch_y = 112.0,
     .min_columns = 4,
-    .min_rows = 3,
+    .min_rows = 2,
 };
 // 信用交易卡片按 128px cell、161x205px pitch 和单行七列布局标定。
 constexpr GridProfile kCreditTradeGridProfile {
@@ -124,7 +130,7 @@ constexpr GridProfile kCreditTradeGridProfile {
     .min_columns = 7,
     .min_rows = 1,
 };
-// 奖励界面按 96px cell、约 117px 横向 pitch 标定；每行独立居中，不共享列起点。
+// 奖励界面按 96px cell、约 117px 横向 pitch 标定；布局整体居中，换行后共享首行左边界。
 constexpr GridProfile kRewardsGridProfile {
     .cell_size = 96,
     .pitch_x = 117.0,
@@ -371,7 +377,7 @@ std::vector<cv::Rect> discover_transfer_regions(const cv::Mat& crop)
         }
     }
     if (localized.empty()) {
-        throw std::runtime_error("transfer ROI contains no local grid candidate");
+        return {};
     }
     std::vector<TransferHypothesis> independent;
     const double threshold = localized.front().score * kIndependentCandidateMinimumScoreRatio;
@@ -414,7 +420,7 @@ std::vector<cv::Rect> discover_transfer_regions(const cv::Mat& crop)
         return PartitionTransferRegions(crop.size(), left.rect, right.rect);
     }
     if (independent.size() > 2) {
-        throw std::runtime_error("transfer ROI contains more than two strong grids");
+        return {};
     }
     const auto& dominant = localized.front();
     const double center = dominant.rect.x + dominant.rect.width / 2.0;
@@ -496,6 +502,42 @@ std::vector<cv::Rect> PartitionTransferRegions(cv::Size crop_size, const cv::Rec
     return { cv::Rect(0, 0, split, crop_size.height), cv::Rect(right_start, 0, crop_size.width - right_start, crop_size.height) };
 }
 
+std::vector<cv::Rect> PartitionPortStoragerRegions(cv::Size crop_size)
+{
+    const int right_start = cvRound(crop_size.width * kPortStoragerRightPanelStartRatio);
+    if (right_start <= 0 || right_start >= crop_size.width || crop_size.height <= 0) {
+        throw std::invalid_argument("port_storager full crop is too small for two panels");
+    }
+    const int left_width = std::min(kPortStoragerLeftPanelWidth, crop_size.width - 1);
+    return {
+        cv::Rect(0, 0, left_width, crop_size.height),
+        cv::Rect(right_start, 0, crop_size.width - right_start, crop_size.height),
+    };
+}
+
+std::optional<double> GridScaleForControllerType(std::string_view controller_type)
+{
+    const auto equals_ignore_case = [controller_type](std::string_view candidate) {
+        return controller_type.size() == candidate.size() && std::ranges::equal(controller_type, candidate, [](char left, char right) {
+                   return std::tolower(static_cast<unsigned char>(left)) == std::tolower(static_cast<unsigned char>(right));
+               });
+    };
+    const auto matches_any = [&](const auto& candidates) {
+        return std::ranges::any_of(candidates, equals_ignore_case);
+    };
+    // Linux/WlRoots 与 MacOS 暂按标准桌面 profile 处理；这些别名尚无独立截图数据验证。
+    constexpr std::array<std::string_view, 4> kStandardControllerTypes { "Win32", "Linux", "WlRoots", "MacOS" };
+    // CloudADB 的 MaaController type 是 Adb，因此放大 profile 会自然覆盖 CloudADB；PlayCover 暂沿用该 profile。
+    constexpr std::array<std::string_view, 2> kAdbControllerTypes { "Adb", "PlayCover" };
+    if (matches_any(kAdbControllerTypes)) {
+        return kAdbControllerGridScale;
+    }
+    if (matches_any(kStandardControllerTypes)) {
+        return kWin32ControllerGridScale;
+    }
+    return std::nullopt;
+}
+
 GridProfile ProfileFor(GridType type)
 {
     switch (type) {
@@ -538,10 +580,11 @@ TransferGridProfile TransferProfileFor(TransferGridVariant variant)
         .rarity_anchor_offset = 64,
         .minimum_top_visibility = 0.90,
     };
-    // 便捷存取站右侧沿用相同 90% 顶部可见率和默认 68..70px pitch。
+    // 便捷存取站右侧要求 80% 底部可见率，拒绝 full ROI 中只露出约 75% 的滚动残行。
     constexpr TransferGridProfile kPortRight {
         .rarity_anchor_offset = 64,
         .minimum_top_visibility = 0.90,
+        .minimum_bottom_visibility = 0.80,
     };
     switch (variant) {
     case TransferGridVariant::TransferLeft:
@@ -596,7 +639,30 @@ std::vector<TransferGridHint> DiscoverTransferGridHints(const cv::Mat& crop, boo
         for (const cv::Rect& partition : partitions) {
             auto local = DiscoverTransferGridHints(crop(partition), structural_rank);
             if (local.size() != 1) {
-                throw std::runtime_error("transfer side partition must contain exactly one grid hint");
+                return {};
+            }
+            TransferGridHint hint = std::move(local.front());
+            hint.region.x += partition.x;
+            hint.region.y += partition.y;
+            hint.rect.x += partition.x;
+            hint.rect.y += partition.y;
+            for (int& x : hint.x_starts) {
+                x += partition.x;
+            }
+            for (int& y : hint.y_starts) {
+                y += partition.y;
+            }
+            combined.push_back(std::move(hint));
+        }
+        return combined;
+    }
+    if (!structural_rank && crop.cols > kWideTransferRoiMinimumWidth) {
+        // port_storager 的中间传送 UI 会形成强边缘；宽 full ROI 先按共同 720p 面板范围隔离，再复用单侧候选逻辑。
+        std::vector<TransferGridHint> combined;
+        for (const cv::Rect& partition : PartitionPortStoragerRegions(crop.size())) {
+            auto local = DiscoverTransferGridHints(crop(partition), structural_rank);
+            if (local.size() != 1) {
+                return {};
             }
             TransferGridHint hint = std::move(local.front());
             hint.region.x += partition.x;
@@ -629,7 +695,7 @@ std::vector<TransferGridHint> DiscoverTransferGridHints(const cv::Mat& crop, boo
             }
         }
         if (candidates.empty()) {
-            throw std::runtime_error("transfer subregion contains no coarse lattice");
+            return {};
         }
         const auto rank = [&](const TransferGridHint& hint) {
             const int columns = static_cast<int>(hint.x_starts.size());

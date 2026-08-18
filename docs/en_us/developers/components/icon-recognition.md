@@ -22,6 +22,8 @@ Use a top-level key from [`assets/data/IconRecognition/recognition_items.json`](
                 "custom_recognition_param": {
                     "grid_type": "transfer",
                     "item_ids": ["item_copper_ore"],
+                    "item_filters": ["Normal:Ore"],
+                    "item_recheck_filters": ["Normal:Ore"],
                     "deduplicate": true
                 },
                 "roi": [
@@ -114,38 +116,52 @@ Pipeline, Go Service, and the C++ API use the same recognition semantics. Only t
 
 The native ROI uses 1280x720 `[x,y,width,height]` coordinates. Width and height must be positive, and the rectangle must be fully inside the image. `single_roi` additionally requires equal width and height.
 
-### `custom_recognition_param`
+### Supported controllers
+
+`IconRecognition` currently reuses these two 1280x720 controller profiles:
+
+| Runtime `type` | Capture requirement | Grid profile |
+| --- | --- | --- |
+| Win32, Linux/WlRoots, MacOS | 1280x720 | Standard 720p UI |
+| Adb, PlayCover | 1280x720 at 240 dpi | Enlarged ADB UI |
+
+The Custom entry point reads the runtime `type` from `MaaContext` and selects a profile. CloudADB reports `Adb` as its runtime type. The compatibility mappings outside Win32/Adb do not yet have dedicated screenshot data validation and may be adjusted as real samples become available. Other controllers, direct C++ calls, or unavailable context fall back to image evidence inside the request ROI. Insufficient evidence returns `exception`; callers cannot specify a scale. The detector temporarily normalizes the image in memory for grid localization and maps cell coordinates back before returning. Item templates are still generated at the final source-cell size and matched on the original image, so `cell_box` and `item_box` always use source-image coordinates. `single_roi` does not run grid detection and never resizes the input image.
+
+The component does not infer, move, or expand the request ROI from the selected controller profile. The caller remains responsible for a native ROI that is fully inside the image and completely covers every target cell. Image-based fallback reads only pixels inside that ROI. Rewards callers should keep passing one large ROI that covers the whole reward group; neither controller type nor item count should be used by callers to rewrite that ROI.
+
+### custom_recognition_param
 
 | Field | Type | Required | Default | Description |
 | -------------------- | ------------------- | ---------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
 | `grid_type` | string / `GridType` | Yes for Custom; set it explicitly in C++ | None for Custom | Selects the grid locator for the current screen. See the table below. The C++ member initializer is only a construction placeholder |
 | `item_ids` | string[] | No | `[]` | Keeps only the listed items. Multiple IDs form a union; duplicates are rejected |
 | `item_filters` | string[] | No | Depends on `grid_type` | Selects candidates by `storageKind:categoryType`. Multiple filters form a union; `*` selects every category under that `storageKind` |
-| `threshold` | number | No | `0.85` | Minimum final score required to report an item as a match. Lower values increase false-positive risk |
+| `item_recheck_filters` | string[] | No | `[]` | Active when both this field and `item_ids` are non-empty; uses the same format as `item_filters`; performs a single-cell recheck on matched candidate cells |
+| `threshold` | number | No | `0.85` | Minimum final match score, enforced uniformly for every grid type |
 | `subpixel_threshold` | number | No | `0.60` | Tries finer position offsets when the base score reaches this value but remains below `threshold` |
 | `deduplicate` | boolean | No | `false` | Keeps only the highest-scoring cell for each `item_id` |
 | `debug` | boolean | No | `false` | Grid and cell diagnostics are collected when recognition reaches the result-assembly stage; early `invalid_image` or `exception` returns may lack them. `debug` controls performance timing and Custom debug-file writing |
 
-Thresholds must satisfy `0 <= subpixel_threshold < threshold <= 1`. When a base score is below `subpixel_threshold`, the component considers that candidate clearly unreliable, skips the finer position search, and does not add it to `matches`. Scores between the two thresholds are refined. A result is returned only when its final score reaches `threshold` and it is not rejected by the low-texture check. Shipment quantity bars and valuable-depot portrait regions are excluded from the template-matching mask; they do not directly produce a rejection state. Check the ROI, frame stability, and candidate filters before lowering thresholds.
+- **`threshold` and `subpixel_threshold`**: Thresholds must satisfy `0 <= subpixel_threshold < threshold <= 1`. When a base score is below `subpixel_threshold`, the component considers that candidate clearly unreliable, skips the finer position search, and does not add it to `matches`. Scores between the two thresholds are refined. A result is returned only when its final score reaches `threshold` and it passes the low-texture check. Shipment quantity bars and valuable-depot portrait regions are excluded from the template-matching mask, but they do not bypass the uniform threshold. Check the ROI, frame stability, and candidate filters before lowering thresholds.
+- **`item_ids` and `item_filters`**: `item_ids` specifies the items to find, while `item_filters` limits the candidate templates by category. When both are supplied, their intersection is used. Unknown or duplicate IDs, malformed filters, an empty filtered set, or an ID excluded by the filters returns `exception`.
+- **`item_recheck_filters`**: When `item_ids` is used to find specific items, visually similar items outside that set may be mistaken for a target item. `item_recheck_filters` performs a single-cell recheck on matched candidate cells, keeping only candidates confirmed as the target `item_id`. Compared with omitting `item_ids` and using only `item_filters` to recognize the entire grid, this approach rechecks only matched cells and is usually faster. Set `deduplicate: true` as well to avoid repeated rechecks of the same item.
 
-When both `item_ids` and `item_filters` are supplied, their intersection is used. Unknown or duplicate IDs, malformed filters, an empty filtered set, or an ID excluded by the filters returns `exception`.
+### grid_type, default candidates, and reference ROIs
 
-### `grid_type`, default candidates, and reference ROIs
-
-| `grid_type` | C++ `GridType` | Screen | Default `item_filters` | Reference ROI |
-| --------------- | ------------------------ | ------------------------ | ---------------------------------------- | ----------------------------------------------------------------------------- |
-| `trade` | `GridType::Trade` | Settlement trade | `Normal:Product`, `Normal:Usable` | `[170,165,935,385]` |
-| `transfer` | `GridType::Transfer` | Inventory and storage | `Normal:*` | Full `[154,202,983,291]`; left `[154,202,585,291]`; right `[739,202,398,291]` |
-| `port_storager` | `GridType::PortStorager` | Portable storage | `Normal:*` | Full `[190,250,880,350]`; left `[190,250,318,350]`; right `[570,250,500,350]` |
-| `valuables` | `GridType::Valuables` | Valuable depot | `ValuableDepot:*` | `[24,76,950,570]` |
-| `shipment` | `GridType::Shipment` | Shipment screen | `Normal:*` | `[34,132,386,474]` |
-| `credit_trade` | `GridType::CreditTrade` | Credit trade | `ValuableDepot:SpecialItem`, `Isolate:*` | `[70,95,1140,415]` |
-| `rewards` | `GridType::Rewards` | Rewards screen | `Isolate:*` | `[39,82,1205,511]` |
-| `single_roi` | `GridType::SingleRoi` | One caller-selected cell | `Normal:*` | Any square inside the image; example `[1177,450,54,54]` |
+| `grid_type` | C++ `GridType` | Screen | Default `item_filters` | Win32 reference ROI | ADB reference ROI |
+| --------------- | ------------------------ | ------------------------ | ---------------------------------------- | ----------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `trade` | `GridType::Trade` | Settlement trade | `Normal:Product`, `Normal:Usable` | `[170,165,935,385]` | `[32,46,1216,549]` |
+| `transfer` | `GridType::Transfer` | Inventory and storage | `Normal:*` | Full `[154,202,983,291]`; left `[154,202,585,291]`; right `[739,202,398,291]` | Full `[30,160,1220,370]`; left `[30,160,710,370]`; right `[780,160,470,370]` |
+| `port_storager` | `GridType::PortStorager` | Portable storage | `Normal:*` | Full `[190,250,880,350]`; left `[190,250,318,350]`; right `[570,250,500,350]` | Full `[78,228,1150,410]`; left `[78,228,368,410]`; right `[562,326,620,293]` |
+| `valuables` | `GridType::Valuables` | Valuable depot | `ValuableDepot:*` | `[24,76,950,570]` | `[100,85,790,540]` |
+| `shipment` | `GridType::Shipment` | Shipment screen | `Normal:*` | `[34,132,386,474]` | `[43,169,480,408]` |
+| `credit_trade` | `GridType::CreditTrade` | Credit trade | `ValuableDepot:SpecialItem`, `Isolate:*` | `[70,95,1140,415]` | `[10,120,1250,510]` |
+| `rewards` | `GridType::Rewards` | Rewards screen | `Isolate:*`, `ValuableDepot:*` | `[39,82,1205,511]` | `[178,140,935,440]` |
+| `single_roi` | `GridType::SingleRoi` | One caller-selected cell | `Normal:*` | Any square inside the image; example `[1177,450,54,54]` | Any square inside the image; example `[1151,393,66,66]` |
 
 Reference ROIs are absolute 1280x720 screen coordinates, not coordinates relative to another ROI. Each value applies only to the listed screen, and the caller must keep every target cell fully covered. One-sided storage ROIs still use absolute screen coordinates.
 
-`rewards` locates white reward cards and determines the horizontal origin of each row independently, so rows do not need aligned columns. Public results still treat them as one multi-row grid: `row` increases from top to bottom, while `column` restarts at zero in each row. Multiple game features reuse this screen type and may show different item categories. When `item_filters` is omitted or empty, the default candidate set is `Isolate:*`; a non-empty `item_filters` replaces that default set completely.
+`rewards` locates white reward cards and requires the whole group to be approximately centered. A single row uses its actual item count. Wrapped layouts infer the column count from the first observed row, reuse its left boundary for later rows, and allow only the last row to be partial. Multiple game features reuse this screen type and may show different item categories. When `item_filters` is omitted or empty, the default candidate set is `Isolate:*`, `ValuableDepot:*`; a non-empty `item_filters` replaces that default set completely.
 
 ### Item IDs
 
@@ -204,10 +220,10 @@ Wildcard forms include `Normal:*`, `ValuableDepot:*`, and `Isolate:*`. The wildc
 
 | Field | Type | Description |
 | ---------------- | ------- | --------------------------------------------------------------------------------- |
-| `detail_version` | integer | Detail contract version; currently `1` |
+| `detail_version` | integer | Detail contract version; currently `2` |
 | `matched` | boolean | Whether at least one result was accepted |
 | `grid_type` | string | Requested grid type. It may be absent when parsing fails before the type is known |
-| `roi` | object | Request ROI with `x/y/width/height` fields |
+| `roi` | integer[4] | Request ROI as `[x,y,width,height]` |
 | `matches` | array | Accepted results ordered by score and position |
 | `error` | object | Present on failure, with a stable `code` and a readable `message` |
 
@@ -220,8 +236,8 @@ Fields in `matches[]`:
 | `category` | string | Catalog category label |
 | `storage_kind` / `category_type` | string | Classification fields for later filtering or business rules |
 | `rarity` | integer | Catalog rarity |
-| `cell_box` | object | Owning grid cell; equal to the request ROI for `single_roi` |
-| `item_box` | object | Final template match location |
+| `cell_box` | integer[4] | Owning grid cell as `[x,y,width,height]`; equal to the request ROI for `single_roi` |
+| `item_box` | integer[4] | Final template match location as `[x,y,width,height]` |
 | `score` | number | Final match score |
 | `row` / `column` | integer | Row and column for real grids; absent for `single_roi` |
 
@@ -242,6 +258,9 @@ All three cases return `MAA_FALSE`, but they do not mean the same thing. `invali
 `no_match` preserves the parsed `grid_type` and `roi`. An `exception` raised during parsing may not contain every request field.
 
 ## Reference screens
+
+> [!NOTE]
+> The screenshots and highlighted ROIs below come from the Win32 controller and do not apply to ADB. Use the ADB reference ROIs from the table above.
 
 <details>
 <summary>Settlement trade</summary>
@@ -296,23 +315,36 @@ All three cases return `MAA_FALSE`, but they do not mean the same thing. `invali
 
 Go services call the `IconRecognition` registration through `ctx.RunRecognitionDirect`. Set the native ROI through `CustomRecognitionParam.ROI` and keep component-specific fields in `CustomRecognitionParam.CustomRecognitionParam`:
 
+MaaEnd Go Service callers should reuse `agent/go-service/pkg/iconrecognition` instead of declaring IconRecognition parameter or detail structs in each business package. `Params` represents `custom_recognition_param`; `Detail` and `Match` represent the component detail, and `Match.CellBox` is the cell rectangle for follow-up actions:
+
 ```go
+import "github.com/MaaXYZ/MaaEnd/agent/go-service/pkg/iconrecognition"
+
 detail, err := ctx.RunRecognitionDirect(
     maa.RecognitionTypeCustom,
     &maa.CustomRecognitionParam{
         ROI:                maa.NewTargetRect(maa.Rect{154, 202, 983, 291}),
-        CustomRecognition: "IconRecognition",
-        CustomRecognitionParam: map[string]any{
-            "grid_type":   "transfer",
-            "item_ids":    []string{"item_copper_ore"},
-            "deduplicate": true,
-        },
+        CustomRecognition: iconrecognition.CustomRecognitionName,
+        CustomRecognitionParam: iconrecognition.NewParams(
+            iconrecognition.WithGridType(iconrecognition.GridTypeTransfer),
+            iconrecognition.WithItemIDs("item_copper_ore"),
+            iconrecognition.WithItemFilters(iconrecognition.StorageFilter().Normal.Ore),
+            iconrecognition.WithDeduplicate(true),
+        ),
     },
     img,
 )
+
+parsed, _, err := iconrecognition.ParseRecognitionDetail(detail)
+if err != nil {
+    return
+}
+for _, match := range parsed.Matches {
+    _ = match.CellBox
+}
 ```
 
-Prefer `RecognitionDetail.Results` when retrieving the component payload. On a hit, use `Results.Best.AsCustom()`. On a miss, `Results.Best` is `nil`, so use `Results.All[0].AsCustom()` instead. The returned `CustomRecognitionResult.Detail` contains the component JSON in both cases. If the outer `DetailJson` is parsed directly, the corresponding paths are `best.detail` and `all[0].detail`; do not read `best.detail` unconditionally on a miss. A Go result struct may declare only the fields needed by the caller because `encoding/json` ignores unknown fields.
+`iconrecognition.ParseRecognitionDetail` selects the Custom payload from Maa results: it uses `Results.Best` on a hit and `Results.All[0]` on a miss, so callers do not need to merge or deduplicate result buckets. When a `CustomRecognitionResult.Detail` string is already available, parse it directly with `iconrecognition.ParseDetail`.
 
 ## C++ API
 

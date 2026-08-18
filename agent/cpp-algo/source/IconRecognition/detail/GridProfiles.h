@@ -1,9 +1,23 @@
 #pragma once
 
+#include <optional>
+#include <string_view>
+
 #include "GridTypes.h"
 
 namespace iconrecognition::detail
 {
+
+// 已通过真实 720p 截图标定的控制器 UI 密度：Win32 基准与 ADB（240 dpi）。
+inline constexpr double kWin32ControllerGridScale = 1.0;
+inline constexpr double kAdbControllerGridScale = 1.25;
+inline constexpr std::array<double, 2> kSupportedControllerGridScales {
+    kWin32ControllerGridScale,
+    kAdbControllerGridScale,
+};
+
+// 将 MaaFramework 控制器类型映射到已经过真实截图标定的网格比例；未知类型保留图像推断回退。
+std::optional<double> GridScaleForControllerType(std::string_view controller_type);
 
 struct GridProfile
 {
@@ -69,6 +83,7 @@ GridProfile ProfileFor(GridType type);
 TransferGridProfile TransferProfileFor(TransferGridVariant variant);
 cv::Mat BuildTransferCellScore(const cv::Mat& image, int cell_size);
 std::vector<cv::Rect> PartitionTransferRegions(cv::Size crop_size, const cv::Rect& left, const cv::Rect& right);
+std::vector<cv::Rect> PartitionPortStoragerRegions(cv::Size crop_size);
 std::vector<TransferGridHint> DiscoverTransferGridHints(const cv::Mat& crop, bool structural_rank);
 
 } // namespace iconrecognition::detail
