@@ -79,7 +79,7 @@
         "post_delay": 0,
         "next": [
             // 如果玩家已唤起了激发的界面
-            "AutoEssenceClickEssenceStartButton",
+            "AutoEssenceClickEssenceStartPrepare",
             // 下述 Anchor 的指向目标需要由 AutoEssenceSetupLocation 节点来进行赋值
             "[JumpBack]__AutoEssenceBackToWorldOnce",
             "[Anchor]AutoEssenceMoveToTriggerPointMaybeTeleport",
@@ -184,7 +184,7 @@
         "post_delay": 0,
         "next": [
             "AutoEssenceMistakeFactoryDevice",
-            "AutoEssenceClickEssenceStartButton"
+            "AutoEssenceClickEssenceStartPrepare"
         ]
     },
     "AutoEssenceMistakeFactoryDevice": {
@@ -218,6 +218,35 @@
         "focus": {
             "Node.Action.Starting": "😕误入工业设备界面，点击关闭按钮"
         }
+    },
+    "AutoEssenceClickEssenceStartPrepare": {
+        "desc": "识别开始挑战界面，播报当前理智",
+        "recognition": {
+            "type": "And",
+            "param": {
+                "all_of": [
+                    "WhiteConfirmButtonType1",
+                    "AutoEssenceClickEssenceStartButtonText"
+                ],
+                "box_index": 1
+            }
+        },
+        "pre_delay": 0,
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "FocusOCRAction",
+                "custom_action_param": {
+                    "node": "CommonSanityText",
+                    "focus": "当前理智 %s"
+                }
+            }
+        },
+        "post_delay": 0,
+        "rate_limit": 0,
+        "next": [
+            "AutoEssenceClickEssenceStartButton"
+        ]
     },
     "AutoEssenceClickEssenceStartButton": {
         "desc": "识别并点击开始界面中的开始挑战按钮",
