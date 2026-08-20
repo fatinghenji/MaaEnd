@@ -522,6 +522,7 @@ struct NaviParamInput
     std::string nav_file_;
     double navmesh_snap_radius_ = 5.0;
     double snap_radius_ = 5.0;
+    bool zip_ = false;
     NaviActionListInput action_;
     NaviActionListInput actions_;
     double x_ = 0.0;
@@ -551,6 +552,7 @@ struct NaviParamInput
         MEO_OPT MEO_KEY("sprint_threshold") sprint_threshold_,
         MEO_OPT MEO_KEY("enable_local_driver") enable_local_driver_,
         MEO_OPT MEO_KEY("enable_bootstrap_navmesh") enable_bootstrap_navmesh_,
+        MEO_OPT MEO_KEY("zip") zip_,
         MEO_OPT MEO_KEY("navmesh_file") navmesh_file_,
         MEO_OPT MEO_KEY("nav_file") nav_file_,
         MEO_OPT MEO_KEY("navmesh_snap_radius") navmesh_snap_radius_,
@@ -633,6 +635,7 @@ NaviParam build_navi_param(const NaviParamInput& input)
     param.sprint_threshold = input.sprint_threshold_;
     param.enable_local_driver = input.enable_local_driver_;
     param.enable_bootstrap_navmesh = input.enable_bootstrap_navmesh_;
+    param.zipline_enabled = input.zip_;
 
     if (input.has_navmesh_file_) {
         param.navmesh_file = input.navmesh_file_;
