@@ -34,15 +34,15 @@
         "QuickTeleport": true,
         "NavPath": [
             {
+                "action": "ZONE",
+                "zone_id": "Wuling_Base"
+            },
+            {
                 "action": "NAVMESH",
                 "target": [
                     788.14,
                     2603.23
                 ]
-            },
-            {
-                "action": "ZONE",
-                "zone_id": "Wuling_Base"
             },
             [
                 795.02,
@@ -58,10 +58,14 @@
         "QuickTeleport": true,
         "NavPath": [
             {
+                "action": "ZONE",
+                "zone_id": "Wuling_Base"
+            },
+            {
                 "action": "NAVMESH",
                 "target": [
-                    707.48,
-                    2665.23
+                    710.64,
+                    2664.58
                 ]
             }
         ],
@@ -73,6 +77,10 @@
         "Id": "IndoorCrops",
         "QuickTeleport": true,
         "NavPath": [
+            {
+                "action": "ZONE",
+                "zone_id": "Wuling_Base"
+            },
             {
                 "action": "NAVMESH",
                 "target": [
@@ -90,6 +98,10 @@
         "QuickTeleport": true,
         "NavPath": [
             {
+                "action": "ZONE",
+                "zone_id": "Wuling_Base"
+            },
+            {
                 "action": "NAVMESH",
                 "target": [
                     829.41,
@@ -105,6 +117,10 @@
         "Id": "CollapsedTianshiPillar",
         "QuickTeleport": true,
         "NavPath": [
+            {
+                "action": "ZONE",
+                "zone_id": "Wuling_Base"
+            },
             {
                 "action": "NAVMESH",
                 "target": [
@@ -128,6 +144,10 @@
             43.01
         ],
         "NavPath": [
+            {
+                "action": "ZONE",
+                "zone_id": "Wuling_Base"
+            },
             {
                 "action": "NAVMESH",
                 "target": [
@@ -169,6 +189,10 @@
         ],
         "NavPath": [
             {
+                "action": "ZONE",
+                "zone_id": "Wuling_Base"
+            },
+            {
                 "action": "NAVMESH",
                 "target": [
                     691.16,
@@ -184,6 +208,10 @@
         "Id": "InflatedAndGlowingBugspittingLankybeast",
         "QuickTeleport": true,
         "NavPath": [
+            {
+                "action": "ZONE",
+                "zone_id": "Wuling_Base"
+            },
             {
                 "action": "NAVMESH",
                 "target": [
@@ -215,6 +243,10 @@
         ],
         "NavPath": [
             {
+                "action": "ZONE",
+                "zone_id": "Wuling_Base"
+            },
+            {
                 "action": "NAVMESH",
                 "target": [
                     909.81,
@@ -230,6 +262,10 @@
         "Id": "Waterlamp",
         "QuickTeleport": true,
         "NavPath": [
+            {
+                "action": "ZONE",
+                "zone_id": "Wuling_Base"
+            },
             {
                 "action": "NAVMESH",
                 "target": [
@@ -273,6 +309,10 @@
         "QuickTeleport": true,
         "NavPath": [
             {
+                "action": "ZONE",
+                "zone_id": "Wuling_Base"
+            },
+            {
                 "action": "NAVMESH",
                 "target": [
                     467.7,
@@ -294,6 +334,10 @@
         "Id": "AnnularWaterfall",
         "QuickTeleport": true,
         "NavPath": [
+            {
+                "action": "ZONE",
+                "zone_id": "Wuling_Base"
+            },
             {
                 "action": "NAVMESH",
                 "target": [
@@ -334,6 +378,10 @@
         "Id": "MysteriousCryptidGraffiti",
         "QuickTeleport": true,
         "NavPath": [
+            {
+                "action": "ZONE",
+                "zone_id": "Wuling_Base"
+            },
             {
                 "action": "NAVMESH",
                 "target": [
@@ -406,24 +454,55 @@
         "MissionId": "m1m64",
         "Name": "栖云生态点",
         "Id": "CloudrestEcoSite",
-        "EnterMap": "SceneEnterWorldWulingMarkerStone_Ship2DestinationThenWalkAndFight",
+        "EnterMap": "SceneEnterWorldWulingMarkerStone3",
         "NavZoneId": "Wuling_Base",
         "NavAssert": [
-            378.56,
-            2345.75,
-            120.17,
-            97.03
+            598,
+            2336,
+            60,
+            48
         ],
         "NavPath": [
             {
+                "action": "ZONE",
+                "zone_id": "Wuling_Base"
+            },
+            {
                 "action": "NAVMESH",
                 "target": [
-                    431.11,
-                    2407.17
+                    636.32,
+                    2331.84
+                ]
+            },
+            {
+                "action": "NAVMESH",
+                "target": [
+                    590.94,
+                    2346.75
+                ]
+            },
+            {
+                "action": "NAVMESH",
+                "target": [
+                    430.6,
+                    2398.33
                 ]
             }
         ],
-        "Heading": 177
+        "Heading": 177,
+        "FightAfterMove": [
+            {
+                "action": "ZONE",
+                "zone_id": "Wuling_Base"
+            },
+            {
+                "action": "NAVMESH",
+                "target": [
+                    430.6,
+                    2398.33
+                ]
+            }
+        ]
     },
     {
         "MissionId": "m1m65",
@@ -486,6 +565,10 @@
         "QuickTeleport": true,
         "NavPath": [
             {
+                "action": "ZONE",
+                "zone_id": "Wuling_Base"
+            },
+            {
                 "action": "NAVMESH",
                 "target": [
                     333.71,
@@ -502,6 +585,10 @@
         "Id": "SerenityGardenTianshiPillar",
         "QuickTeleport": true,
         "NavPath": [
+            {
+                "action": "ZONE",
+                "zone_id": "Wuling_Base"
+            },
             {
                 "action": "NAVMESH",
                 "target": [
@@ -525,6 +612,10 @@
         "QuickTeleport": true,
         "NavPath": [
             {
+                "action": "ZONE",
+                "zone_id": "Wuling_Base"
+            },
+            {
                 "action": "NAVMESH",
                 "target": [
                     573.36,
@@ -540,6 +631,10 @@
         "Id": "AutumnGold",
         "QuickTeleport": true,
         "NavPath": [
+            {
+                "action": "ZONE",
+                "zone_id": "Wuling_Base"
+            },
             {
                 "action": "NAVMESH",
                 "target": [

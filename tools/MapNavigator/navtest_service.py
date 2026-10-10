@@ -7,22 +7,28 @@
 
 from __future__ import annotations
 
+import json
+import re
 import threading
+import time
+from pathlib import Path
 from typing import Any, Callable
 
-from agent_session import AgentSession
+from agent_session import AgentSession, GO_SERVICE_EXE
 from connection_models import RecordingSessionConfig
 from connectors import build_recording_connector
 from json_import import export_assert_location_node, export_path_nodes
 import key_listener
-from runtime import MaaRuntime
+from runtime import INSTALL_DIR, MaaRuntime
 
 
 StatusCallback = Callable[[str, str], None]
+PhaseCallback = Callable[[str, str], None]
 ReadyCallback = Callable[[], None]
 ArmedCallback = Callable[[int, str], None]
 RunStateCallback = Callable[[bool], None]
 FinishedCallback = Callable[[bool, str, str], None]
+PositionCallback = Callable[[dict[str, Any]], None]
 ErrorCallback = Callable[[str], None]
 ClosedCallback = Callable[[], None]
 
@@ -34,11 +40,16 @@ ASSERT_NODE_NAME = "MapNavigatorDebugAssertNode"
 HOTKEY_RUN = "f3"
 HOTKEY_ABORT = "f4"
 
+# 正式包 resource 目录 (经 install junction): 滑索挂索链 MapNavigatorZiplineMount*
+# 节点与挂索提示扫描要用的 OCR 模型都在里面。装上后 cpp 端到塔脚才点得了滑索。
+RESOURCE_PIPELINE_DIR = Path(__file__).resolve().parents[2] / "install" / "resource"
+
 
 class NavTestService:
     """一次试跑会话: 起 Agent、连游戏、监听 F3/F4、按需重复跑同一条路线。"""
 
     RUN_POLL_INTERVAL_SECONDS = 0.2
+    POSITION_OBSERVER_READY_TIMEOUT_SECONDS = 2.0
     # 关会话时等工作线程收尾的上限 (要覆盖一轮 post_task 从 post_stop 中返回的时间)。
     SHUTDOWN_JOIN_TIMEOUT_SECONDS = 20.0
 
@@ -46,18 +57,22 @@ class NavTestService:
         self,
         runtime: MaaRuntime,
         on_status: StatusCallback,
+        on_phase: PhaseCallback,
         on_ready: ReadyCallback,
         on_armed: ArmedCallback,
         on_run_state: RunStateCallback,
         on_finished: FinishedCallback,
+        on_position: PositionCallback,
         on_error: ErrorCallback,
         on_closed: ClosedCallback,
     ) -> None:
         self._on_status = on_status
+        self._on_phase = on_phase
         self._on_ready = on_ready
         self._on_armed = on_armed
         self._on_run_state = on_run_state
         self._on_finished = on_finished
+        self._on_position = on_position
         self._on_error = on_error
         self._on_closed = on_closed
 
@@ -74,8 +89,127 @@ class NavTestService:
         self._state_lock = threading.Lock()
         self._armed_path: list[Any] = []
         self._armed_kind = "route"
+        self._armed_zip = False
+        self._armed_heading_source = "character"
+        self._armed_account = ""
         self._tasker: Any = None
         self._resource: Any = None
+        self._position_thread: threading.Thread | None = None
+        self._position_stop = threading.Event()
+        self._position_ready = threading.Event()
+        self._navigation_phase_reported = False
+
+    _POSITION_RE = re.compile(
+        r"MapLocator \[status=0\].*?\[position\.zoneId=(.*?)\] "
+        r"\[position\.x=([-+0-9.eE]+)\] \[position\.y=([-+0-9.eE]+)\].*?"
+        r"\[position\.angle=([-+0-9.eE]+)\]"
+    )
+    _NAVMESH_PLANNED_RE = re.compile(r"NAVMESH (?:route planned|generated path)\.")
+    _WAITING_FOR_GPS_RE = re.compile(r"Waiting for first valid GPS signal\.\.\.")
+    _INITIAL_FIX_RE = re.compile(r"Initial Pos fixed:")
+    _AGENT_ABORT_RE = re.compile(r"Process aborted\.")
+
+    @staticmethod
+    def _position_log_path() -> Path:
+        return INSTALL_DIR / "debug" / "cpp-algo" / "debug" / "maafw.log"
+
+    @staticmethod
+    def _latest_zipline_account() -> str:
+        """Ziplines.json 里最近一次带账号的记录 —— 与 route_preview 的 latestAccountId
+        兜底同语义 (account_id 非空, fetched_at 最新)。页面没选账号时自动用上它。"""
+        path = Path(__file__).resolve().parents[2] / "install" / "debug" / "record" / "Ziplines.json"
+        try:
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            return ""
+        if not isinstance(data, dict):
+            return ""
+        latest_id = ""
+        latest_at = ""
+        for record in data.get("maps") or []:
+            if not isinstance(record, dict):
+                continue
+            account_id = str(record.get("account_id") or "")
+            fetched_at = str(record.get("fetched_at") or "")
+            if account_id and fetched_at > latest_at:
+                latest_id = account_id
+                latest_at = fetched_at
+        return latest_id
+
+    def _start_position_observer(self) -> None:
+        self._stop_position_observer()
+        self._position_stop.clear()
+        self._position_ready.clear()
+        self._position_thread = threading.Thread(
+            target=self._position_observer_loop,
+            args=(self._position_log_path(),),
+            name="MapNavigatorLivePosition",
+            daemon=True,
+        )
+        try:
+            self._position_thread.start()
+        except RuntimeError as exc:
+            self._position_thread = None
+            self._position_ready.set()
+            self._on_status(f"实时寻路位置观察启动失败: {exc}", "#f59e0b")
+            return
+        if not self._position_ready.wait(self.POSITION_OBSERVER_READY_TIMEOUT_SECONDS):
+            self._on_status("实时寻路位置观察启动超时, 本轮不显示实时轨迹。", "#f59e0b")
+            self._stop_position_observer()
+
+    def _stop_position_observer(self) -> None:
+        self._position_stop.set()
+        self._position_ready.set()
+        thread = self._position_thread
+        if thread is not None and thread.is_alive():
+            thread.join(1.0)
+        self._position_thread = None
+
+    def _position_observer_loop(self, path: Path) -> None:
+        offset = 0
+        try:
+            with path.open("r", encoding="utf-8", errors="replace") as stream:
+                stream.seek(0, 2)
+                offset = stream.tell()
+                self._position_ready.set()
+                while not self._position_stop.is_set():
+                    stream.seek(offset)
+                    line = stream.readline()
+                    if not line:
+                        time.sleep(0.04)
+                        continue
+                    offset = stream.tell()
+                    if self._WAITING_FOR_GPS_RE.search(line):
+                        self._on_phase("locating", "正在定位起点…")
+                    elif self._INITIAL_FIX_RE.search(line):
+                        self._on_phase("planning", "已定位起点，正在规划路线…")
+                    elif self._AGENT_ABORT_RE.search(line):
+                        self._abort_requested = True
+                        self._on_phase("error", "导航服务异常退出，本轮试跑已中断")
+                        self._on_status("导航服务在规划过程中异常退出，请查看导航日志。", "#ef4444")
+                    if not self._navigation_phase_reported and self._NAVMESH_PLANNED_RE.search(line):
+                        self._navigation_phase_reported = True
+                        self._on_phase("navigating", "规划完成，正在执行路线…")
+                    match = self._POSITION_RE.search(line)
+                    if not match:
+                        continue
+                    zone, x, y, rot = match.groups()
+                    try:
+                        self._on_position(
+                            {
+                                "type": "position",
+                                "x": float(x),
+                                "y": float(y),
+                                "zone": zone,
+                                "rot": float(rot) % 360.0,
+                            }
+                        )
+                    except (ValueError, TypeError):
+                        continue
+        except OSError as exc:
+            self._on_status(f"实时寻路位置观察不可用: {exc}", "#f59e0b")
+        finally:
+            self._position_ready.set()
 
     @property
     def is_alive(self) -> bool:
@@ -96,14 +230,21 @@ class NavTestService:
         points: list[Any],
         *,
         exported: bool = False,
+        zip_enabled: bool = False,
+        heading_source: str = "character",
         assert_target: dict | None = None,
+        zipline_account_id: str = "",
     ) -> None:
         """装载待跑的东西: 有断言框就装框, 否则装线。F3 跑的就是这一份。
 
         每次调用整份替换 (含 kind), 切页签重新装载时不会留下上一种形状的残留。
         编辑器路点在这里就地导出, 只有这一处口径, 进程内会话与提权子进程都经过它。
         A* 路线依赖 tier 变换与显示底图, 这些只有前端有, 故送来的已是 pipeline 节点。
+        滑索记录按游戏账号隔离, 勾了滑索就把页面选中的账号一并装上, 缺了它
+        cpp 端认不出身份, 整条线退化成步行。
         """
+        if assert_target is None and heading_source not in ("character", "camera"):
+            raise ValueError("试跑朝向必须为 character 或 camera")
         if assert_target is not None:
             nodes = self._export_assert(assert_target)
             if nodes is None:
@@ -121,6 +262,9 @@ class NavTestService:
         with self._state_lock:
             self._armed_path = nodes
             self._armed_kind = kind
+            self._armed_zip = bool(zip_enabled and kind == "route")
+            self._armed_heading_source = heading_source if kind == "route" else "character"
+            self._armed_account = str(zipline_account_id or "")
         self._on_armed(len(nodes), kind)
 
     def _export_assert(self, assert_target: dict) -> list[Any] | None:
@@ -146,7 +290,13 @@ class NavTestService:
             if isinstance(assert_target, dict):
                 self.arm([], assert_target=assert_target)
             elif isinstance(points, list):
-                self.arm(points, exported=bool(msg.get("exported")))
+                self.arm(
+                    points,
+                    exported=bool(msg.get("exported")),
+                    zip_enabled=bool(msg.get("zip")),
+                    heading_source=msg.get("heading_source", "character"),
+                    zipline_account_id=str(msg.get("zipline_account_id") or ""),
+                )
             if kind == "run":
                 self.trigger_run()
         elif kind == "abort":
@@ -179,6 +329,7 @@ class NavTestService:
             self._on_status("当前没有正在进行的试跑。", "#64748b")
             return
         self._abort_requested = True
+        self._on_phase("stopping", "正在终止试跑…")
         self._on_status("⏹ 正在终止试跑…", "#f59e0b")
         with self._state_lock:
             tasker = self._tasker
@@ -217,9 +368,17 @@ class NavTestService:
             if self._session_config is None:
                 raise RuntimeError("试跑会话配置缺失。")
 
+            self._on_phase("connecting", "正在启动导航服务并连接游戏…")
+            # 正式包 resource (pipeline + OCR 模型): 滑索挂索链 MapNavigatorZiplineMount*
+            # 在里面, cpp 端到塔脚后要读它的扫描配置、跑挂索任务。缺了它滑索腿只走到塔脚。
+            resource_dir = RESOURCE_PIPELINE_DIR
+            # go-service: AutoAltClickAction (按住 Alt 点击「登上滑索架」) 注册在这里。
+            aux = [GO_SERVICE_EXE] if GO_SERVICE_EXE.exists() else None
             self._session.open(
                 build_recording_connector(self._runtime, self._session_config),
                 agent_name="MapNavigateAgent",
+                resource_dirs=[resource_dir] if resource_dir.exists() else None,
+                aux_agents=aux,
             )
             tasker = self._session.tasker
             resource = self._session.resource
@@ -232,6 +391,7 @@ class NavTestService:
             key_listener.start()
 
             self._on_ready()
+            self._on_phase("ready", "已连接游戏，正在装载试跑路线…")
             self._on_status(
                 f"● 已连接游戏, 按 F3 重跑 / F4 立即终止 [{self._session_config.display_name()}]",
                 "#3b82f6",
@@ -255,6 +415,7 @@ class NavTestService:
             import traceback
 
             traceback.print_exc()
+            self._on_phase("error", "试跑会话启动失败")
             self._on_error(str(exc))
         finally:
             self._alive.clear()
@@ -268,6 +429,9 @@ class NavTestService:
         with self._state_lock:
             path = list(self._armed_path)
             kind = self._armed_kind
+            zip_enabled = self._armed_zip
+            heading_source = self._armed_heading_source
+            account_id = self._armed_account
         if not path:
             return
         if tasker.stopping or tasker.running:
@@ -277,37 +441,70 @@ class NavTestService:
 
         self._abort_requested = False
         self._running.set()
+        self._navigation_phase_reported = False
         self._on_run_state(True)
         if kind == "assert":
             # 跑的就是导出的那个节点原样: 识别命中即通过, 不另加判定。
+            self._on_phase("preparing", "正在准备定位断言…")
             self._on_status("● 断言中 —— 按 F4 立即终止", "#ef4444")
             node_name = ASSERT_NODE_NAME
             override = {node_name: path[0]}
         else:
+            self._on_phase("preparing", "正在准备路线试跑…")
             self._on_status("● 试跑中 —— 按 F4 立即终止", "#ef4444")
             node_name = NODE_NAME
+            custom_action_param: dict[str, Any] = {"path": path, "heading_source": heading_source}
+            if zip_enabled:
+                custom_action_param["zip"] = True
             override = {
                 node_name: {
                     "recognition": "DirectHit",
                     "action": "Custom",
                     "custom_action": "MapNavigateAction",
                     # 必须是 dict: maafw 会对整个 override 做一次 json.dumps, 先序列化会双重编码。
-                    "custom_action_param": {"path": path},
+                    "custom_action_param": custom_action_param,
                     "pre_delay": 0,
                     "post_delay": 0,
                 }
             }
+            if zip_enabled:
+                # 滑索记录按账号隔离。把账号写进这个只存值的节点 (从不执行, 不在任何 next
+                # 里), cpp 端规划前从它读身份 —— 与 go-service CaptureUid 写入的是同一处。
+                # 页面没选账号时兜底取 Ziplines.json 里最近的账号 (与 route_preview 一致)。
+                if not account_id:
+                    account_id = self._latest_zipline_account()
+                if account_id:
+                    override["CurrentAccountIdentity"] = {"attach": {"account_id": account_id}}
+                else:
+                    self._on_status("勾了滑索但没有账号身份: Ziplines.json 里没有带账号的记录, 将全程步行。", "#f59e0b")
 
         resource.override_pipeline(override)
 
-        job = tasker.post_task(node_name).wait()
-        succeeded = bool(job.succeeded)
+        if kind == "route":
+            self._start_position_observer()
+            self._on_phase("starting", "正在启动导航器…")
+        else:
+            self._on_phase("locating", "正在定位并检查断言区域…")
+        try:
+            job = tasker.post_task(node_name).wait()
+            succeeded = bool(job.succeeded)
+        finally:
+            self._stop_position_observer()
+        self._on_phase("finishing", "正在收尾本轮试跑…")
         self._running.clear()
         self._on_run_state(False)
 
         if self._abort_requested:
+            self._on_phase("idle", "本轮试跑已终止，可按 F3 重新开始")
             self._on_finished(False, "aborted", kind)
             return
+        completed_text = (
+            "断言检查完成" if kind == "assert" and succeeded else
+            "断言检查未通过" if kind == "assert" else
+            "路线试跑完成" if succeeded else
+            "路线试跑失败"
+        )
+        self._on_phase("finished" if succeeded else "failed", completed_text)
         self._on_finished(succeeded, "ok" if succeeded else "failed", kind)
 
     def _register_hotkeys(self) -> None:
@@ -315,6 +512,7 @@ class NavTestService:
         key_listener.register(HOTKEY_ABORT, self.hotkey_abort)
 
     def _shutdown_agent(self) -> None:
+        self._stop_position_observer()
         key_listener.stop()
         with self._state_lock:
             self._tasker = None

@@ -82,10 +82,10 @@
         "recognition": "TemplateMatch",
         "roi": "CheckRainbowText",
         "roi_offset": [
-            -18,
+            -20,
             0,
             0,
-            28
+            50
         ],
         "template": "EnvironmentMonitoring/PhotoIcon.png",
         "threshold": 0.8,
@@ -196,6 +196,17 @@
         "all_of": [
             "InRainbowMission"
         ],
+        // 面板入场动画期间点击可能被吞掉，等按钮区域静止后再继续
+        // （wait_freezes 按 ROI 整体判定静止，区域越大越容易把按钮位移稀释掉）
+        "pre_wait_freezes": {
+            "time": 200,
+            "target": [
+                904,
+                580,
+                368,
+                130
+            ]
+        },
         "pre_delay": 0,
         "post_delay": 0,
         "rate_limit": 0,
@@ -253,7 +264,7 @@
         "desc": "已进入彩虹任务地图，准备快捷传送",
         "recognition": "And",
         "all_of": [
-            "EnvironmentMonitoringQuickTeleportSelectButton",
+            "QuickTeleportButton",
             "InRainbowMission"
         ],
         "pre_delay": 0,
@@ -267,7 +278,7 @@
         "desc": "在彩虹任务地图中点击前往传送",
         "recognition": "And",
         "all_of": [
-            "EnvironmentMonitoringQuickTeleportSelectButton",
+            "QuickTeleportButton",
             "InRainbowMission"
         ],
         "pre_delay": 0,
@@ -283,7 +294,7 @@
         "desc": "在彩虹任务地图中点击传送",
         "recognition": "And",
         "all_of": [
-            "WhiteConfirmButtonType1"
+            "TeleportButton"
         ],
         "pre_delay": 0,
         "action": "Click",
@@ -371,6 +382,61 @@
     },
     "GoToRainbowMove": {
         "desc": "自动寻路前往彩虹",
+        "pre_delay": 0,
+        "action": "Custom",
+        "custom_action": "MapNavigateAction",
+        "custom_action_param": {
+            "path": [
+                {
+                    "action": "ZONE",
+                    "zone_id": "Wuling_L4_328"
+                },
+                {
+                    "action": "NAVMESH",
+                    "target": [
+                        243.65,
+                        182.44
+                    ],
+                    "target_tier": "Wuling_L4_328"
+                },
+                {
+                    "action": "RUN",
+                    "target": [
+                        243.5,
+                        178.04
+                    ],
+                    "target_tier": "Wuling_L4_328"
+                },
+                {
+                    "action": "NAVMESH",
+                    "target": [
+                        214.61,
+                        145.62
+                    ],
+                    "target_tier": "Wuling_L4_328"
+                },
+                {
+                    "action": "HEADING",
+                    "angle": 260
+                }
+            ]
+        },
+        "post_delay": 0,
+        "rate_limit": 0,
+        "next": [
+            "RainbowTakePhoto"
+        ],
+        "focus": {
+            "Node.Action.Succeeded": {
+                "trace": true
+            },
+            "Node.Action.Failed": {
+                "trace": true
+            }
+        }
+    },
+    "GoToRainbowMoveAfterFight": {
+        "desc": "可能的战斗结束后，恢复性地走回彩虹拍照点",
         "pre_delay": 0,
         "action": "Custom",
         "custom_action": "MapNavigateAction",

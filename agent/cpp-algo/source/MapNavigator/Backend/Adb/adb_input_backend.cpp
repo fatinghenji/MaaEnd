@@ -1,12 +1,10 @@
 #include <algorithm>
 #include <chrono>
-#include <string_view>
 #include <thread>
 #include <utility>
 
 #include <MaaUtils/Logger.h>
 
-#include "../../controller_type_utils.h"
 #include "../../navi_config.h"
 #include "adb_input_backend.h"
 
@@ -18,74 +16,18 @@ namespace
 
 constexpr int32_t kReferenceFrameHeight = 720;
 
-class ScopedImageBuffer
-{
-public:
-    ScopedImageBuffer()
-        : buffer_(MaaImageBufferCreate())
-    {
-    }
-
-    ~ScopedImageBuffer() { MaaImageBufferDestroy(buffer_); }
-
-    ScopedImageBuffer(const ScopedImageBuffer&) = delete;
-    ScopedImageBuffer& operator=(const ScopedImageBuffer&) = delete;
-
-    MaaImageBuffer* Get() const { return buffer_; }
-
-private:
-    MaaImageBuffer* buffer_ = nullptr;
-};
-
-AdbCameraSwipeDriverConfig MakeDefaultCameraSwipeDriverConfig(std::string_view controller_type)
+AdbCameraSwipeDriverConfig MakeDefaultCameraSwipeDriverConfig()
 {
     AdbCameraSwipeDriverConfig config;
-    config.contact_id = IsPlayCoverControllerType(controller_type) ? 0 : config.contact_id;
     config.pressure = 0;
     config.turn_swipe_duration_ms = kAdbTouchTurnProfile.swipe_duration_ms;
     config.post_swipe_settle_ms = kAdbTouchTurnProfile.post_swipe_settle_ms;
     return config;
 }
 
-AdbVirtualJoystickDriverConfig MakeDefaultJoystickDriverConfig(std::string_view controller_type)
-{
-    AdbVirtualJoystickDriverConfig config;
-    if (!IsPlayCoverControllerType(controller_type)) {
-        return config;
-    }
-
-    config.contact_id = 0;
-    return config;
-}
-
-AdbActionButtonLayout MakeDefaultActionButtonLayout(std::string_view controller_type)
-{
-    AdbActionButtonLayout layout;
-    if (!IsPlayCoverControllerType(controller_type)) {
-        return layout;
-    }
-
-    layout.sprint_button.contact_id = 0;
-    layout.jump_button.contact_id = 0;
-    layout.attack_button.contact_id = 0;
-    layout.interact_button.contact_id = 0;
-    return layout;
-}
-
-bool RequiresSingleTouchSerialization(std::string_view controller_type)
-{
-    return IsPlayCoverControllerType(controller_type);
-}
-
 double ComputeDefaultTurnUnitsPerDegree([[maybe_unused]] MaaController* ctrl)
 {
     return kAdbTouchTurnProfile.default_units_per_degree;
-}
-
-bool HasUsableBlindActionZoneGate(const maplocator::YoloCoarseResult& coarse)
-{
-    return coarse.valid && !coarse.is_none && !coarse.zone_id.empty() && coarse.zone_id != "None" && coarse.raw_class != "None"
-           && coarse.base_class != "None";
 }
 
 } // namespace
@@ -95,10 +37,8 @@ AdbInputBackend::AdbInputBackend(MaaController* ctrl, std::string controller_typ
     , controller_type_(std::move(controller_type))
     , default_turn_units_per_degree_(ComputeDefaultTurnUnitsPerDegree(ctrl))
     , has_locator_(locator != nullptr)
-    , camera_swipe_driver_(ctrl, MakeDefaultCameraSwipeDriverConfig(controller_type_))
-    , zone_guard_(locator)
-    , joystick_driver_(ctrl, locator, MakeDefaultJoystickDriverConfig(controller_type_))
-    , action_buttons_(MakeDefaultActionButtonLayout(controller_type_))
+    , camera_swipe_driver_(ctrl, MakeDefaultCameraSwipeDriverConfig())
+    , joystick_driver_(ctrl, locator, AdbVirtualJoystickDriverConfig {})
 {
     if (ctrl_ == nullptr) {
         unsupported_reason_ = "controller handle is null";
@@ -143,30 +83,26 @@ double AdbInputBackend::default_turn_units_per_degree() const
     return default_turn_units_per_degree_;
 }
 
+double AdbInputBackend::default_pitch_units_per_degree() const
+{
+    return kAdbTouchTurnProfile.default_pitch_units_per_degree;
+}
+
 SteeringTransportProfile AdbInputBackend::steering_transport_profile() const
 {
-    if (RequiresSingleTouchSerialization(controller_type_)) {
-        return SteeringTransportProfile {
-            .supports_concurrent_move_and_look = false,
-            .min_send_interval_ms = 120,
-            .min_emit_delta_deg = 4.0,
-            .max_batch_delta_deg = 14.0,
-            .action_quiet_period_ms = 180,
-        };
-    }
-
     return SteeringTransportProfile {
         .supports_concurrent_move_and_look = true,
         .min_send_interval_ms = 0,
         .min_emit_delta_deg = 1.5,
-        .max_batch_delta_deg = 20.0,
-        .action_quiet_period_ms = 60,
+        .max_batch_delta_deg = 90.0,
+        .action_quiet_period_ms = kAdbTouchTurnProfile.action_quiet_period_ms,
+        .drops_turn_sends = true,
     };
 }
 
 bool AdbInputBackend::supports_sprint() const
 {
-    return !IsPlayCoverControllerType(controller_type_);
+    return true;
 }
 
 void AdbInputBackend::SetMovementStateSync(bool forward, bool left, bool backward, bool right, int delay_millis)
@@ -180,8 +116,7 @@ void AdbInputBackend::SetMovementStateSync(bool forward, bool left, bool backwar
 
 void AdbInputBackend::TriggerJumpSync(int hold_millis)
 {
-    if (!ClickBlindTargetSync(
-            "jump",
+    if (!ClickTargetSync(
             action_buttons_.jump_button,
             std::max(hold_millis, action_buttons_.default_hold_ms),
             action_buttons_.post_action_delay_ms)) {
@@ -191,8 +126,7 @@ void AdbInputBackend::TriggerJumpSync(int hold_millis)
 
 void AdbInputBackend::TriggerInteractSync(int hold_millis)
 {
-    if (!ClickBlindTargetSync(
-            "interact",
+    if (!ClickTargetSync(
             action_buttons_.interact_button,
             std::max(hold_millis, action_buttons_.default_hold_ms),
             action_buttons_.post_action_delay_ms)) {
@@ -210,14 +144,12 @@ void AdbInputBackend::PulseForwardSync(int hold_millis)
 
 void AdbInputBackend::TriggerSprintSync()
 {
-    if (!ClickBlindTargetSync(
-            "sprint",
-            action_buttons_.sprint_button,
-            action_buttons_.default_hold_ms,
-            action_buttons_.post_action_delay_ms)) {
+    if (!ClickTargetSync(action_buttons_.sprint_button, action_buttons_.default_hold_ms, action_buttons_.post_action_delay_ms)) {
         LogWarn << "AdbInputBackend: failed to trigger sprint.";
     }
     sprint_button_down_ = false;
+    // 冲刺会退出走路, 摇杆推回满行程
+    joystick_driver_.SetWalking(false);
 }
 
 void AdbInputBackend::ResetForwardWalkSync(int release_millis)
@@ -247,26 +179,27 @@ void AdbInputBackend::MouseRightUpSync(int delay_millis)
     MouseRightUpOnTargetSync(action_buttons_.sprint_button.contact_id, delay_millis);
 }
 
+void AdbInputBackend::TriggerZiplineLaunchSync()
+{
+    if (!ClickTargetSync(action_buttons_.zipline_launch_button, action_buttons_.default_hold_ms, action_buttons_.post_action_delay_ms)) {
+        LogWarn << "AdbInputBackend: failed to click zipline launch button.";
+    }
+}
+
+void AdbInputBackend::TriggerZiplineDismountSync(int hold_millis)
+{
+    if (!ClickTargetSync(action_buttons_.zipline_dismount_button, hold_millis, action_buttons_.post_action_delay_ms)) {
+        LogWarn << "AdbInputBackend: failed to click zipline dismount button.";
+    }
+}
+
 bool AdbInputBackend::SendViewDeltaSync(int dx, int dy)
 {
     if (ctrl_ == nullptr || (dx == 0 && dy == 0)) {
         return ctrl_ != nullptr;
     }
 
-    const bool single_touch_mode = RequiresSingleTouchSerialization(controller_type_);
-    const bool has_active_movement = single_touch_mode && (forward_down_ || left_down_ || backward_down_ || right_down_);
-    if (has_active_movement && !joystick_driver_.Release(0)) {
-        LogWarn << "AdbInputBackend: failed to release joystick before single-touch camera swipe.";
-    }
-
     const bool applied = camera_swipe_driver_.SwipeByPixels(dx, dy);
-    if (has_active_movement) {
-        const bool restored = joystick_driver_.SetMovementState(forward_down_, left_down_, backward_down_, right_down_, 0);
-        if (!restored) {
-            LogWarn << "AdbInputBackend: failed to restore joystick after single-touch camera swipe.";
-        }
-    }
-
     if (!applied) {
         LogWarn << "AdbInputBackend: failed to apply camera swipe." << VAR(dx) << VAR(dy);
         return false;
@@ -281,59 +214,6 @@ void AdbInputBackend::ApplyMovementState(int delay_millis)
         LogWarn << "AdbInputBackend: failed to apply movement state." << VAR(forward_down_) << VAR(left_down_) << VAR(backward_down_)
                 << VAR(right_down_);
     }
-}
-
-bool AdbInputBackend::CaptureFrame(cv::Mat* out_image) const
-{
-    if (out_image == nullptr || ctrl_ == nullptr) {
-        return false;
-    }
-
-    ScopedImageBuffer buffer;
-    const MaaCtrlId screencap_id = MaaControllerPostScreencap(ctrl_);
-    MaaControllerWait(ctrl_, screencap_id);
-    if (!MaaControllerCachedImage(ctrl_, buffer.Get()) || MaaImageBufferIsEmpty(buffer.Get())) {
-        return false;
-    }
-
-    *out_image = cv::Mat(
-                     MaaImageBufferHeight(buffer.Get()),
-                     MaaImageBufferWidth(buffer.Get()),
-                     MaaImageBufferType(buffer.Get()),
-                     MaaImageBufferGetRawData(buffer.Get()))
-                     .clone();
-    return !out_image->empty();
-}
-
-bool AdbInputBackend::IsBlindActionAllowed(const char* action_name) const
-{
-    cv::Mat frame;
-    if (!CaptureFrame(&frame)) {
-        LogWarn << "AdbInputBackend: blind action blocked because screencap failed." << VAR(action_name);
-        return false;
-    }
-
-    const auto coarse = zone_guard_.ProbeYolo(frame);
-    if (HasUsableBlindActionZoneGate(coarse)) {
-        return true;
-    }
-
-    LogInfo << "AdbInputBackend: blind action blocked by zone gate." << VAR(action_name) << VAR(coarse.valid) << VAR(coarse.is_none)
-            << VAR(coarse.raw_class) << VAR(coarse.base_class) << VAR(coarse.zone_id) << VAR(coarse.confidence);
-    return false;
-}
-
-bool AdbInputBackend::ClickBlindTargetSync(const char* action_name, const AdbTapTarget& target, int hold_millis, int delay_millis)
-{
-    if (!IsBlindActionAllowed(action_name)) {
-        return false;
-    }
-
-    const bool clicked = ClickTargetSync(target, hold_millis, delay_millis);
-    if (!clicked) {
-        LogWarn << "AdbInputBackend: failed to trigger blind action." << VAR(action_name);
-    }
-    return clicked;
 }
 
 bool AdbInputBackend::ClickTargetSync(const AdbTapTarget& target, int hold_millis, int delay_millis)
@@ -372,10 +252,6 @@ bool AdbInputBackend::TouchDownTargetSync(const AdbTapTarget& target) const
 void AdbInputBackend::MouseRightDownOnTargetSync(const AdbTapTarget& target, int delay_millis)
 {
     if (sprint_button_down_) {
-        SleepIfNeeded(delay_millis);
-        return;
-    }
-    if (!IsBlindActionAllowed("sprint_hold")) {
         SleepIfNeeded(delay_millis);
         return;
     }

@@ -12,7 +12,17 @@
 _✨ MAA Helper for The End ✨_
 <!-- prettier-ignore-end -->
 
-Powered by [MaaFramework](https://github.com/MaaXYZ/MaaFramework) & [MXU](https://github.com/MistEO/MXU)
+[![Pipeline](https://img.shields.io/badge/Pipeline-%23876f69?logo=paddypower&logoColor=%23FFFFFF)](https://github.com/MaaXYZ/MaaFramework)
+[![C++](https://img.shields.io/badge/C%2B%2B-00599C?logo=cplusplus)](https://github.com/MaaEnd/MaaEnd/tree/v2/agent/cpp-algo)
+[![Go](https://img.shields.io/badge/Go-007d9c?logo=go)](https://github.com/MaaEnd/MaaEnd/tree/v2/agent/go-service)
+[![license](https://img.shields.io/github/license/MaaEnd/MaaEnd)](https://github.com/MaaEnd/MaaEnd/blob/v2/LICENSE)
+[![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20Android-blueviolet)](https://maaend.com/)
+[![release](https://img.shields.io/github/v/release/MaaEnd/MaaEnd?label=release)](https://github.com/MaaEnd/MaaEnd/releases)
+[![downloads](https://img.shields.io/github/downloads/MaaEnd/MaaEnd/latest/total)](https://github.com/MaaEnd/MaaEnd/releases/latest)
+[![stars](https://img.shields.io/github/stars/MaaEnd/MaaEnd?style=flat)](https://github.com/MaaEnd/MaaEnd/stargazers)
+[![commit activity](https://img.shields.io/github/commit-activity/m/MaaEnd/MaaEnd)](https://github.com/MaaEnd/MaaEnd/commits/v2)
+
+Powered by [MaaFramework](https://github.com/MaaXYZ/MaaFramework) & [MXU](https://github.com/MistEO/MXU) & [MaaFwApp](https://github.com/Aliothmoon/MaaFwApp)
 
 Actively under development 🎉…
 
@@ -42,27 +52,37 @@ If you run into any issues, feel free to open an [ISSUE](https://github.com/MaaE
 - 🧩 **Puzzle Master**: Fast puzzle solving with single-run, loop, and demo-only modes for both practical use and learning.
 - 💎 **Essence filtering**: Smart essence recognition with automatic lock/discard behavior based on weapon rarity, essence type, and extra rules. ✨
 - 🎱 **Essence farming**: Automatically challenges heavy silt points, supports repeated runs, reward claiming, and post-battle essence filtering in one flow.
+- 🗡️ **Trial of Swordmancy**: Automatically clears daily Trial of Swordmancy / coating farming for regional development routines.
 - 🌿 **Environment Monitoring**: Automatically clears environment monitoring tasks so routine combat-and-travel work can be handed off.
 - ⚔️ **Protocol Space**: Automatically spends sanity on Protocol Space runs with selectable reward routes, making stamina cleanup much easier.
 - 🌾 **Eco Farm**: Handles harvesting, planting, and watering, and can also tidy up your bag before and after the run.
 - 🧺 **Auto resource gathering**: Follows outdoor gathering routes automatically to collect as many field resources as possible.
+- 🦉 **Resource Recycle Station**: Automatically collects materials from owl recycle stations in Wuling and Valley IV.
+- 🧭 **Batch Detector**: Batch-use Compass / Detector in a chosen region to speed up treasure hunting.
+- 🎈 **Aerial Salvage**: Automatically deploys balloons and keeps them balanced so the mini-game can run hands-free.
+- 🚡 **Zipline import**: Import the current account's zipline coordinates from the official map for auto navigation (import once, stays valid long-term).
+- 🔄 **Switch Team**: One-click party switching in the open world, handy for exploration and farming routes.
 - 🎁 **Operator gift delivery**: Automatically heads to the contact desk, gives a gift to an operator, and collects the return gift if available.
 - 🔫 **Armory upgrades & production**: Weapon upgrades, gear crafting, simple crafting, and batch simple crafting all help cut down repetitive progression work. 💪
-- 💰 **Auto trading/reselling**: Combines stockpiling with flexible-demand goods selling, helping you watch profit margins and manage vouchers more easily. 💸
-- 🛒 **Sell Products**: Automatically exchanges products at each outpost into vouchers so you can skip the repetitive clicks.
+- 💰 **Auto trading/reselling**: Combines stockpiling, staple-goods buying, and flexible-demand selling so you can watch margins and manage vouchers more easily. 💸
+- 🛒 **Outpost Trading**: Automatically exchanges products at each outpost into vouchers so you can skip the repetitive clicks.
 - 🚚 **Delivery jobs**: Supports full accept-and-forward flows, accept-only mode, and pack-only mode, with per-region toggles.
 - 🌆 **Commission snatching**: Automatically grabs commissions from the list and can continue with depot-node routing when configured.
 - 💳 **Credit shop purchasing**: Auto-buy credit shop items with support for priorities, discounts, reserve thresholds, and credit-gain linkage.
 - 🐌 **Inventory transfer**: Move warehouse stock across regions on the Di Jiang ship in batches - great for batteries, ores, sand leaves, and other stored goods.
+- 🎒 **Stash Backpack**: One-click backpack tidy-and-stash, useful before/after other tasks.
 - 📐 **Blueprint porter**: Batch import blueprints, intelligently parse share codes or messy text, and get building plans in place with far less manual work.
 - 🎁 **Base tasks**: Collect base outputs, restock, and manage clue collection/placement/gifting in one go.
 - 🤝 **Visit friends**: Automatically visits friends and handles production assistance plus intel exchange as part of the routine.
 - 👥 **Batch friend requests**: Send friend requests in bulk, either to specific UIDs or to strangers, without entering them one by one.
+- 🗑️ **Batch delete friends**: Clean long-inactive friends by last-login time, while skipping friends with remarks.
 - 💬 **Baker message cleanup**: Clears Baker conversation messages automatically so those chat prompts do not pile up.
 - 📁 **Intel Archives**: Scans owned archive entries, records them, and can import the result into Open Endfieldmap to check what's missing.
+- 🧮 **Pull count calculator**: Reads headhunt resources and warehouse vouchers to estimate pulls for the current / next pool.
+- 🔑 **Auto account switch**: Log out and switch to a specified account automatically (phone on CN, email on Global).
 - 📅 **Daily automation**: Daily rewards, Simulation Space rewards, encyclopedia red dots, production manual rewards, and more can all be cleaned up in one sweep. ✅
 - 💊 **Emergency sanity medication**: One-click emergency sanity medication use saves you a step. 💊
-- 💻 **Multi-platform support**: Supports PC (`Win32` foreground) and Android (`ADB`), so MaaEnd can tag along wherever you play. 🐟
+- 💻 **Multi-platform support**: Supports PC (`Win32`), Android (`ADB`), Linux, macOS, and more, so MaaEnd can tag along wherever you play. 🐟
 
 ## 🛠️ Developer Guide
 
@@ -78,11 +98,15 @@ Huge thanks to all contributors who helped build MaaEnd! 🎉 You are all awesom
 
 With your support, MaaEnd continues to grow and improve. ❤️
 
+## 🙏 Acknowledgments
+
+Thanks to [zmdmap](https://zmdmap.com/) for providing information support to MaaEnd.
+
 ## 💬 Community
 
 Come hang out and chat with everyone:
 
-- 💬 **User QQ Group**: [1078075580](https://qm.qq.com/q/Rz8HYYvCMY)  
+- 💬 **User QQ Group**: [1082597011](https://qm.qq.com/q/F4FjKxkCRy)  
   For usage questions, feature requests, and casual chatting.
 - 👨‍💻 **Developer QQ Group**: [1072587329](https://qm.qq.com/q/EyirQpBiW4)  
   Dedicated to development discussion. (For general usage questions, please go to the user group above.)

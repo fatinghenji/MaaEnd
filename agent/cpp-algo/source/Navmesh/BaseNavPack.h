@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -84,9 +85,6 @@ struct BaseNavTriangle
 {
     std::array<uint32_t, 3> vertices { 0, 0, 0 };
     std::array<int32_t, 3> neighbors { -1, -1, -1 };
-    uint32_t component_id = 0;
-    float center_u = 0.0F;
-    float center_v = 0.0F;
 };
 
 struct BaseNavLink
@@ -95,13 +93,55 @@ struct BaseNavLink
     uint32_t target = 0;
 };
 
+struct BaseNavSurface
+{
+    uint8_t area = 0;
+    uint8_t poly_type = 0;
+    uint32_t flags = 0;
+};
+
+inline constexpr uint8_t kBaseNavOffMeshRegular = 0;
+inline constexpr uint8_t kBaseNavOffMeshExtended = 1;
+
+// 两沿三角的哨兵值:v1 记录与未落上的锚点。
+inline constexpr uint32_t kBaseNavOffMeshTriangleNone = 0xFFFFFFFFU;
+// bit0 = 起→终可走,bit1 = 终→起可走。
+inline constexpr uint8_t kBaseNavDirOkStartEnd = 0x01U;
+inline constexpr uint8_t kBaseNavDirOkEndStart = 0x02U;
+
+struct BaseNavOffMeshLink
+{
+    uint16_t zone_id = 0;
+    uint8_t kind = kBaseNavOffMeshRegular;
+    int32_t is_ext = 0;
+    int32_t bidirectional = 0;
+    int32_t area = 0;
+    uint16_t link_type = 0;
+    uint8_t direction = 0;
+    float radius = 0.0F;
+    float cost_modifier = 0.0F;
+    std::array<BaseNavVertex, 4> points;
+    // v2 新增;v1 记录保持默认值。
+    uint8_t dir_ok = 0;
+    uint32_t start_triangle = kBaseNavOffMeshTriangleNone;
+    uint32_t end_triangle = kBaseNavOffMeshTriangleNone;
+
+    // 两沿三角齐备且不同,才算带方向信息。
+    bool anchored() const
+    {
+        return start_triangle != kBaseNavOffMeshTriangleNone && end_triangle != kBaseNavOffMeshTriangleNone
+               && start_triangle != end_triangle;
+    }
+};
+
 // v4 起包尾可以挂若干独立数据段,靠头里的段目录定位。四段原有数据一个字节不动,
 // 认不出某个 tag 的读取器跳过它即可。
 struct BaseNavSection
 {
     std::array<char, 4> tag { ' ', ' ', ' ', ' ' };
     uint32_t flags = 0;
-    std::vector<uint8_t> bytes;
+    // 只有要活过载入的段才有字节, 其余为空。内容相同的段共用一份。
+    std::shared_ptr<const std::vector<uint8_t>> bytes;
 };
 
 class BaseNavPack;
@@ -115,7 +155,11 @@ BaseNavPack MakeBaseNavPack(
     std::vector<BaseNavVertex> vertices,
     std::vector<BaseNavTriangle> triangles,
     std::vector<BaseNavLink> links,
-    std::vector<BaseNavSection> sections);
+    std::vector<BaseNavSurface> surfaces,
+    std::vector<BaseNavOffMeshLink> off_mesh_links,
+    std::vector<BaseNavSection> sections,
+    uint64_t build_hash,
+    uint64_t file_fnv);
 
 }
 
@@ -128,6 +172,8 @@ public:
     const std::vector<BaseNavVertex>& vertices() const;
     const std::vector<BaseNavTriangle>& triangles() const;
     const std::vector<BaseNavLink>& links() const;
+    const std::vector<BaseNavSurface>& surfaces() const;
+    const std::vector<BaseNavOffMeshLink>& offMeshLinks() const;
     const BaseNavZone* findZone(uint16_t zone_id) const;
     const BaseNavZone* findZoneByName(const std::string& name) const;
 
@@ -148,6 +194,18 @@ public:
     // v4 附加段的原始字节;认不出的 tag 直接留着不解析。没有该段返回 nullptr。
     const BaseNavSection* section(const char (&tag)[5]) const;
 
+    // 连接表只被 BaseNavPlanner 的 CSR 邻接读一遍,之后全仓无读者。持有方在 planner
+    // 建完后调这个把它还给系统 —— 单区 map02base 有 1050 万条,占 80MB。
+    void releaseLinks();
+
+    // 包的身份:载入路径、头里的 build_hash、解压后整份字节的 FNV-1a。
+    // 旁包(预烘场)靠后两者认主包,按区裁剪载入也照样算整份文件。
+    const std::filesystem::path& path() const { return path_; }
+
+    uint64_t buildHash() const { return build_hash_; }
+
+    uint64_t fileFnv() const { return file_fnv_; }
+
 private:
     friend BaseNavPack detail::MakeBaseNavPack(
         std::filesystem::path path,
@@ -155,13 +213,21 @@ private:
         std::vector<BaseNavVertex> vertices,
         std::vector<BaseNavTriangle> triangles,
         std::vector<BaseNavLink> links,
-        std::vector<BaseNavSection> sections);
+        std::vector<BaseNavSurface> surfaces,
+        std::vector<BaseNavOffMeshLink> off_mesh_links,
+        std::vector<BaseNavSection> sections,
+        uint64_t build_hash,
+        uint64_t file_fnv);
 
     std::filesystem::path path_;
+    uint64_t build_hash_ = 0;
+    uint64_t file_fnv_ = 0;
     std::vector<BaseNavZone> zones_;
     std::vector<BaseNavVertex> vertices_;
     std::vector<BaseNavTriangle> triangles_;
     std::vector<BaseNavLink> links_;
+    std::vector<BaseNavSurface> surfaces_;
+    std::vector<BaseNavOffMeshLink> off_mesh_links_;
     std::vector<BaseNavSection> sections_;
 };
 

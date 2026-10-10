@@ -17,6 +17,8 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Set, Tuple
 
+import json5
+
 LANGS = ("CN", "TC", "EN", "JP", "KR")
 
 DEFAULT_MATCHER_CONFIG = Path("assets/data/EssenceFilter/matcher_config.json")
@@ -33,8 +35,8 @@ def load_suffix_stopwords(config_path: Path) -> Dict[str, List[str]]:
     }
     if not config_path.exists():
         return default
-    with config_path.open("r", encoding="utf-8") as f:
-        data = json.load(f)
+    with config_path.open("r", encoding="utf-8-sig") as f:
+        data = json5.load(f)
     stopwords = data.get("suffixStopwords")
     if isinstance(stopwords, dict):
         return {
@@ -236,6 +238,7 @@ def build_skill_pools(
 def write_skill_pools(path: Path, data: Dict) -> None:
     with path.open("w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
+        f.write("\n")
 
 
 def main() -> int:

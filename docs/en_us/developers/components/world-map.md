@@ -19,18 +19,18 @@ Find the given coordinate on the current map, and confirm the icon sitting there
 
 The node zooms the map all the way out first, then captures the screen itself, solves the viewport, and pans the map when needed, until the target is inside the usable area. **Once `icon` is given, no confirmation means no coordinate** — being able to compute a position does not mean anything is there. It would rather fail and let the caller retry or take another candidate than hand back a computed empty spot. Without an `icon` it just solves the coordinate and hands it back, making no such promise.
 
-The zoom level is the unknown the viewport solve has to sweep its scale band for, so pinning it down is the first thing the node does: it keeps running the Pipeline's `__ScenePrivateMapZoomOut`, pressing again for as long as the minus button is recognised. Once the minus button has greyed out — nothing left to zoom — that node no longer recognises and not a single touch goes out. But **failing to recognise it is not proof of having bottomed out**: that one frame may just be mid-animation, and believing the map is at its minimum when it is not makes the viewport solve fail every time. So it takes several spaced-out confirmations before it stops, and anything it cannot judge counts as "still zoomable". Writing `__ScenePrivateMapZoomOut` into the Pipeline is therefore optional: with it the zoom is already done, without it the node does it. The button sits at different coordinates on each client, so it follows the resource layers; the node itself carries no coordinates.
+The zoom level is the unknown the viewport solve has to sweep its scale band for, so pinning it down is the first thing the node does: it runs the Pipeline's `SceneMapZoomOutWithoutReco` once; when that subtask returns, the map should already be at minimum zoom. The button sits at different coordinates on each client, so it follows the resource layers; the node itself carries no coordinates. Writing `[JumpBack]__ScenePrivateMapZoomOut` into the Pipeline is therefore optional: with it the zoom is already done, without it `MapFind` still calls `SceneMapZoomOutWithoutReco`.
 
 ### Node parameters
 
 Required (`custom_recognition_param`):
 
 | Parameter | Description |
-| --------- | -------------------------------------------------------------------------------------- |
+| ------------------- | ------------------------------------------------------------------------------------------ |
 | `zone` | Zone name, i.e. the directory name under `assets/resource/image/MapLocator/`, e.g. `Wuling` |
-| `at` | Two numbers `[x, y]`, the position in that zone's base map pixel frame |
+| `at` / `candidates` | One of the two. `at` judges one point, `candidates` judges a set, see [Judging a set of candidates in one call](#judging-a-set-of-candidates-in-one-call) |
 
-The base map is one large image of the whole zone, with each sub-area occupying its own non-overlapping patch of it. `at` uses that image's frame — so the sub-area is not a parameter, and does not need to be one.
+`at` is two numbers `[x, y]`, the position in that zone's base map pixel frame. The base map is one large image of the whole zone, with each sub-area occupying its own non-overlapping patch of it. `at` uses that image's frame — so the sub-area is not a parameter, and does not need to be one.
 
 Optional (`custom_recognition_param`):
 
@@ -39,8 +39,51 @@ Optional (`custom_recognition_param`):
 | `icon` | none | An icon name from the [icon table](#icon-table). Omit it to only solve the coordinate, confirming no icon at all |
 | `state` | `"unlocked"` | Which unlock state counts as a hit. Requires an icon carrying `gold_ratio` in the table, since nothing else tells the two states apart |
 | `max_attempts` | `4` | Recognition attempts. Panning the map is not charged against it |
+| `vote_grid` | `3` | When matching the whole window at once cannot solve the viewport, solve again with [block voting](#block-voting) at this grid size. Set to `1` to turn the fallback off |
 
 Thresholds, templates and calibrated scales never appear in the node: they belong to the icon and live in the icon table. A new kind of icon is one table entry, not a fistful of node parameters.
+
+### Judging a set of candidates in one call
+
+When several coordinates on the same map have to be tried one after another and only one of them will hit, write them as a set of `candidates`. Each candidate is one entry:
+
+| Field | Description |
+| ------ | ------------------------------------------------------------------------------------------- |
+| `at` | Two numbers `[x, y]`, the same frame as above |
+| `next` | The node the framework goes to when this candidate hits; it is also the candidate's on/off switch |
+
+A set of candidates shares one zoom-out and one viewport solve: they all look at the same screen, and those two steps give every one of them the same answer. What each candidate pays on its own is one windowed confirmation, plus a pan when its target is off screen. One node per point is exactly what repeats those first two steps, and every repetition computes the same answer.
+
+Candidates are judged in writing order, and **the first one whose icon confirms wins; the ones behind it are never looked at**. The winner hands its own `next` back to the framework, overriding whatever the node's own `next` says.
+
+#### Turning one candidate off
+
+When the `next` node is turned off with `enabled: false`, that candidate is **skipped without being looked at at all**. Turning one destination off from a task option therefore means turning off its `next` node — the Pipeline's own switch, with nothing extra stuffed into `custom_recognition_param`:
+
+```json
+{
+    "option": {
+        "DeliveryDestination": {
+            "type": "select",
+            "default_case": "Both",
+            "cases": [
+                {
+                    "name": "NorthOnly",
+                    "pipeline_override": {
+                        "MyDeliverToSouthBin": {
+                            "enabled": false
+                        }
+                    }
+                }
+            ]
+        }
+    }
+}
+```
+
+The switch has to sit ahead of recognition, and that part matters: candidates stop at the first hit, so confirming one and then handing back a node that will not run takes every candidate behind it down as well — they never even get judged. That is exactly the case when all the icons are present and an option decides which one to go to, because the first candidate is then bound to confirm. A node whose data cannot be read counts as on.
+
+`candidates` requires an `icon`: coordinates alone cannot tell candidates apart, so without one every candidate would confirm and the first one would always come back. They also have to be far enough apart — the confirmation gate is the icon table's `gate` (10 base map pixels by default), and two candidates closer than that can confirm each other's icon.
 
 ### Success and failure
 
@@ -49,9 +92,11 @@ Thresholds, templates and calibrated scales never appear in the node: they belon
 | Hit | The icon is confirmed and `box` is where it sits; or the player marker covers it (below) |
 | Miss | The viewport cannot be solved, the icon cannot be confirmed, the map hits its edge while still out of reach, or the unlock state does not match |
 
+With `candidates` this table applies per candidate: any candidate hitting makes the node hit, and the node misses only when the whole set misses.
+
 The player's own marker is drawn on top of the icon, which is what stops the icon from being recognised — and the reason it is covered is precisely that the character is already standing there. In that case the node reports a **hit** at the expected position, because a marker landing there is itself evidence that the viewport was solved correctly. This branch only applies to icons flagged `occluded_by_player` in the table.
 
-A mismatched unlock state **fails immediately and does not retry** — that is a rule, not a recognition failure, and retrying changes nothing.
+A mismatched unlock state makes that candidate **fail immediately without retrying** — that is a rule, not a recognition failure, and retrying changes nothing.
 
 ### Examples
 
@@ -99,6 +144,38 @@ Take another branch when the point at that coordinate is still locked:
 }
 ```
 
+Try the recycling stations of one sub-area in turn, and let the one that hits decide which delivery route comes next:
+
+```json
+{
+    "MyPickRecycleBin": {
+        "recognition": "Custom",
+        "custom_recognition": "MapFind",
+        "custom_recognition_param": {
+            "zone": "Wuling",
+            "icon": "RecycleBin",
+            "candidates": [
+                {
+                    "at": [
+                        636.2,
+                        1319.2
+                    ],
+                    "next": "MyDeliverToNorthBin"
+                },
+                {
+                    "at": [
+                        712.0,
+                        1402.5
+                    ],
+                    "next": "MyDeliverToSouthBin"
+                }
+            ]
+        },
+        "action": "Click"
+    }
+}
+```
+
 ---
 
 ## Icon table
@@ -118,7 +195,7 @@ The icon table is `assets/resource/image/SceneManager/MapIcons.json`, one entry 
 
 The table sits beside the templates it names and resolves through the same resource layers: a client whose icons are drawn differently ships its own templates and its own thresholds in its own layer.
 
-Two entries exist today:
+Three entries exist today:
 
 **`TeleportAnchor`**, the ordinary teleport anchor. Its position is fixed, `at` is the icon itself, and a match offset beyond `gate` is treated as the wrong icon. The two closest teleport points in a zone are 23.5 base map pixels apart, so a 10 pixel gate leaves twice the margin needed.
 
@@ -128,13 +205,21 @@ Two entries exist today:
 >
 > The unlock threshold for `Core` was only ever calibrated against unlocked captures. The author has no locked account and could not capture one, so **the locked side has never been verified**. It does not affect the normal flow for unlocked points — that branch is only reached once an icon is confirmed and its gold ratio falls below the gate. `TeleportAnchor` carries no `gold_ratio` at all, so asking for `state` on it raises an error rather than returning an uncalibrated verdict.
 
+**`RecycleBin`**, the resource recycling station. A sub-area holds several of them, a delivery job names exactly one, and the map draws **an icon on every one of them**: the one the job names is blue, the rest are white, and the shape is identical. Normalised correlation is insensitive to overall brightness, so the blue template still scores 0.65 against a white icon and clears the 0.55 threshold — on score alone both candidates confirm, which is no discrimination at all. Discrimination therefore goes to `gold_ratio`: measured 0.92 on the named one against 0.05 on the others, so a gate at 0.5 leaves over 0.4 of margin on either side.
+
+> [!NOTE]
+>
+> `RecycleBin` borrows the `gold_ratio` and `state` fields, but what it judges is not lock state — it is "is this the one the current delivery job names". The mechanism is exactly the same, saturation measured over the pixels the template marks out; only the name does not fit. Nodes need not write `state`: the default already asks for the blue one, and a white one fails on the spot as a state mismatch and yields to the next candidate.
+>
+> This threshold was calibrated from one blue and one white icon in a single capture. The margin on both sides is wide, but that one pair is the whole sample. Blue is also not exclusive to this icon — the same map carries other blue icons, they simply sit far enough from the recycling station coordinates never to fall inside that small fixed window.
+
 ---
 
 ## Wiring up teleport points
 
 Teleport nodes live in `assets/resource/pipeline/SceneManager/SceneTeleport<Zone>.json` and fill the `__ScenePrivateMapTeleportPickAnchor` slot; entry nodes live in `Interface/Scene<Zone>.json`, bind that slot and route through `__ScenePrivateMap<SubArea>EnterWorldAnchorWithPick`, which switches the map to its main layer, uses `all_of` to confirm that this really is that sub-area's map screen, and gives the zoom a head start on the way.
 
-The `__ScenePrivateMapZoomOut` in the entry node is a head start, not a requirement: `MapFind` zooms out on its own. Copy an existing entry when wiring up a new point; leaving it out costs nothing in recognition.
+The `[JumpBack]__ScenePrivateMapZoomOut` in the entry node is a head start, not a requirement: `MapFind` calls `SceneMapZoomOutWithoutReco` on its own. Copy an existing entry when wiring up a new point; leaving it out costs nothing in recognition.
 
 The sub-area check lives on `...EnterWorldAnchorWithPick`; the `MapFind` node no longer repeats it — the `recognition` slot went to `MapFind`, and solving the viewport is itself the stronger test of "are we on this map at all".
 
@@ -166,3 +251,15 @@ The unlock check runs on its own track. Locked and unlocked icons differ only in
 > [!IMPORTANT]
 >
 > Once `icon` is given, icon confirmation is the sole basis for acting. A solved viewport is **not** enough to click on — however accurate the transform, it only says "if an icon is there, it should be at this position", not that one is. Missing an icon costs a retry; hitting the wrong one costs a click on another teleport point or on bare terrain, and the two are not equivalent. Without `icon` the node hands back a coordinate and makes no promise about it; wiring that to `Click` is clicking blind, so know what you are doing.
+
+### Block voting
+
+The viewport solve treats the whole search window as one template by default, and normalised correlation gives a single number for the whole window. When something covers part of it locally — the fog over unexplored ground, for instance — that one-tenth of the area drags the whole frame's score down, and the correct rung falls below the threshold with it.
+
+Rather than give up there, the window is split into `vote_grid` × `vote_grid` blocks matched separately; each block's score surface is shifted back by that block's offset inside the window so they all agree on one window origin, then combined by a per-pixel median before taking the maximum. An occluded block is only a minority vote and gets outvoted by the rest — and this path never has to know what the occlusion looks like, so fog, weather, overlays and map markers all go through it alike.
+
+It only runs after the whole-window attempt has already been rejected; a frame that solves normally never reaches it. The cost is one extra pass of matching, on a frame that was already going to pay for another pan and capture. Block side length has a floor, since a block too small carries no positioning information; a rung with fewer than four voting blocks is discarded entirely and left to the other scale rungs.
+
+The position block voting reports is integer-pixel, with no sub-pixel extrapolation — a median surface is not a correlation surface, so extrapolating on it has no basis. The maximum is taken over the base map, so rounding costs under half a base-map pixel; that is one term of the total error, and whatever the match itself is off by comes on top of it. What ultimately bounds the position is icon confirmation, whose window is 10 base pixels.
+
+Block voting only changes how the viewport is solved; whatever it solves still has to pass icon confirmation, so the note above applies to it unchanged.

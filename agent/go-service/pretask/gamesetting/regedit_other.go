@@ -66,6 +66,16 @@ func SetScreenmanagerWindowPositionY(_ uint32) error {
 	return ErrUnsupported
 }
 
+// GetLanguageTextChange is unavailable on non-Windows platforms.
+func GetLanguageTextChange() (uint32, error) {
+	return 0, ErrUnsupported
+}
+
+// SetLanguageTextChange is unavailable on non-Windows platforms.
+func SetLanguageTextChange(_ uint32) error {
+	return ErrUnsupported
+}
+
 func GetVideoCustomQuality() (uint32, error) {
 	return 0, ErrUnsupported
 }
@@ -83,6 +93,21 @@ func SetVideoFrameRate8(_ uint32) error {
 }
 
 func GetVideoFullScreen() (uint32, error) {
+	return 0, ErrUnsupported
+}
+
+// IsVideoFullScreen 在非 Windows 平台不可用。
+func IsVideoFullScreen() (bool, error) {
+	return false, ErrUnsupported
+}
+
+// GetResolvedVideoResolutionWidth 在非 Windows 平台不可用。
+func GetResolvedVideoResolutionWidth() (uint32, error) {
+	return 0, ErrUnsupported
+}
+
+// GetResolvedVideoResolutionHeight 在非 Windows 平台不可用。
+func GetResolvedVideoResolutionHeight() (uint32, error) {
 	return 0, ErrUnsupported
 }
 
@@ -178,13 +203,27 @@ func SetVideoTextureQuality1(_ uint32) error {
 	return ErrUnsupported
 }
 
+// GetCachedUID 在非 Windows 平台不可用。
+func GetCachedUID() (string, error) {
+	return "", ErrUnsupported
+}
+
 // Apply 在非 Windows 平台不可用。
-func Apply(region, displayType, resolution string) bool {
+func Apply(displayType, resolution string) bool {
 	log.Error().
 		Str("component", "gamesetting").
-		Str("region", region).
 		Str("display_type", displayType).
 		Str("resolution", resolution).
 		Msg("apply is only supported on windows")
 	return false
+}
+
+// ApplyAutoHDR 在非 Windows 平台不可用。
+func ApplyAutoHDR(_ string) error {
+	return ErrUnsupported
+}
+
+// IsAutoHDREnabled 在非 Windows 平台始终视为未开启。
+func IsAutoHDREnabled() (bool, error) {
+	return false, nil
 }

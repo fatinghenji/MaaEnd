@@ -1,23 +1,8 @@
 {
-    "setting": [
-        {
-            "name": "Keymap",
-            "label": "$option.Keymap.label",
-            "description": "$option.Keymap.description",
-            "option": [
-                "KeymapGeneral",
-                "KeymapFight"
-            ]
-        }
-    ],
-    "global_option": [
-        "KeymapGeneral",
-        "KeymapFight"
-    ],
     "option": {
         "KeymapGeneral": {
-            "label": "$option.KeymapGeneral.label",
             "type": "hotkey",
+            "label": "$option.KeymapGeneral.label",
             "hotkeys": [
                 {
                     "name": "KeymapUseCurrentQuickTool",
@@ -52,20 +37,26 @@
                 "MapNavigatorInteract": {
                     "key": "{KeymapInteract.primary}"
                 },
+                "AutoSellPressStockRedistribution": {
+                    "key": "{KeymapInteract.primary}"
+                },
                 "AutoPickFalls": {
                     "key": "{KeymapInteract.primary}"
                 },
                 "AutoPickInteractive": {
                     "key": "{KeymapInteract.primary}"
                 },
-                "MapNavigatorZiplineMount": {
+                "ProtocolSpaceTouchExitTouch": {
+                    "key": "{KeymapInteract.primary}"
+                },
+                "ProtocolSpaceTouchExitTouchRetry": {
                     "key": "{KeymapInteract.primary}"
                 }
             }
         },
         "KeymapFight": {
-            "label": "$option.KeymapFight.label",
             "type": "hotkey",
+            "label": "$option.KeymapFight.label",
             "hotkeys": [
                 {
                     "name": "KeymapFightCombo",
@@ -155,5 +146,21 @@
                 }
             }
         }
-    }
+    },
+    "global_option": [
+        "KeymapGeneral",
+        "KeymapFight"
+    ],
+    "setting": [
+        {
+            "name": "Keymap",
+            "label": "$option.Keymap.label",
+            "description": "$option.Keymap.description",
+            "option": [
+                "KeymapGeneral",
+                "KeymapFight"
+            ],
+            "default_expand": false
+        }
+    ]
 }

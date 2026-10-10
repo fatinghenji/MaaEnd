@@ -10,6 +10,9 @@
 - pnpm 10+
 - Go 1.25.6+
 
+> [!NOTE]
+> 上面这些只够跑桌面端。要出 Android 包，还得额外准备 JDK、Android SDK、NDK 和 Ninja，见 [Android 构建环境准备](./android-build-env.md)。
+
 ### 检查本地环境
 
 ```bash
@@ -25,15 +28,15 @@ go version
 ```bash
 git clone --recursive https://github.com/MaaEnd/MaaEnd.git
 cd MaaEnd
-uv run tools/setup_workspace.py
+uv run setup-workspace
 pnpm install
 ```
 
 > [!NOTE]
 >
-> 如果 `setup_workspace.py` 出错，参考下方[手动配置指南](#手动配置指南)。
+> 如果 `setup-workspace` 出错，参考下方[手动配置指南](#手动配置指南)。
 
-**`setup_workspace.py` 常用参数：**
+**`setup-workspace` 常用参数：**
 
 | 参数 | 说明 |
 | --------------------- | --------------------------------------------------------------------------- |
@@ -43,7 +46,13 @@ pnpm install
 | `--cpp-algo-pr <N>` | 从指定 PR 的最新成功 CI run 下载 cpp-algo（用于快速测试尚未合并的 PR 改动） |
 | `--cpp-algo-run <ID>` | 从指定 workflow run ID 下载 cpp-algo |
 
-> `--cpp-algo-pr` 和 `--cpp-algo-run` 互斥，二选一。不指定时会根据当前工作区分支选择对应的成功 CI 构建；在主分支 `v2` 上仅使用最新的 push 构建。非主分支会优先匹配当前提交的构建，避免误用 `v2` 的 cpp-algo。
+> `--cpp-algo-pr` 和 `--cpp-algo-run` 互斥，二选一；两者都表示明确指定，不再做任何推断。
+>
+> 不指定时的选取规则：
+>
+> - **主分支 `v2`**：取 `v2` 上最近一次成功的 push 构建（最新提交若未触发 CI，则沿提交向前找）。
+> - **其他分支**：依次尝试「当前提交 → 当前分支名 → 由当前提交反查 PR → `v2`」。本地分支名常与远程不同（如 `pr-4945` 实为 `feat/android-agent-ci`），因此以提交为准。
+> - 回退到 `v2` 产物时会打印告警——那意味着你拿到的是 `v2` 的 agent，而不是本分支的构建；需要本分支产物时用 `--cpp-algo-run <ID>` 明确指定。
 
 ### 编辑器（推荐）
 
@@ -77,7 +86,7 @@ pnpm install
 - `style:` 不影响代码含义的更改（空白、格式、缺少分号等）
 - `chore:` 日常构建过程或辅助工具的变动（不涉及生产代码）
 
-> **示例**：`feat(SellProduct): 新增地区建设自动售卖 Pipeline`
+> **示例**：`feat(OutpostTrading): 新增地区建设自动售卖 Pipeline`
 
 ### 关于子模块 (Submodule) 更新
 
@@ -117,11 +126,11 @@ git checkout -b feat/auto-sell-items
 
 先看一遍[组件指南](./components-guide.md)了解项目结构，确认你该改哪里。
 
-对于「售卖物品」，按任务名 **SellProduct** 组织 Pipeline：入口写在 `assets/resource/pipeline/SellProduct.json`，流程复杂时可在同目录下建子目录 `SellProduct/` 拆成多个 JSON（与 MaaEnd 仓库里现有「售卖产品」任务一致），然后开始写节点。
+对于「售卖物品」，按模块名 **OutpostTrading** 组织 Pipeline：入口写在 `assets/resource/pipeline/OutpostTrading.json`，流程复杂时可在同目录下建子目录 `OutpostTrading/` 拆成多个 JSON（与 MaaEnd 仓库里现有「据点交易」任务一致），然后开始写节点。
 
 ### 命名
 
-节点名使用 PascalCase，并与任务前缀一致，例如：`SellProductOpenBag`、`SellProductSelectItem`、`SellProductConfirmSell`。
+节点名使用 PascalCase，并与任务前缀一致，例如：`OutpostTradingOpenBag`、`OutpostTradingSelectItem`、`OutpostTradingConfirmSell`。
 
 ### 像写状态机/决策树一样思考
 
@@ -150,18 +159,18 @@ Pipeline 的核心逻辑是类似**有限状态机（FSM）/决策树（Decision
 
 ![green background](https://github.com/user-attachments/assets/4da87f61-30fe-4a94-b6ed-68672877fff3)
 
-将截好的模板放到 `assets/resource/image/SellProduct/` 下。
+将截好的模板放到 `assets/resource/image/OutpostTrading/` 下。
 
 当有了图片后，我们可以开始编写第一个节点。下面用 **TemplateMatch** 在主界面找到「地区建设」入口，命中后 **Click** 进入；`template` 填你放到 `assets/resource/image/` 下的相对路径，`roi` 用插件框选缩小搜索范围（需按你的模板与界面微调）；若用绿幕处理了模板，可加上 `green_mask`。
 
 ```json
 {
-    "SellProductMain": {
+    "OutpostTradingMain": {
         "desc": "在主界面时，识别地区建设入口并点击进入",
         "recognition": {
             "type": "TemplateMatch",
             "param": {
-                "template": "SellProduct/RegionalDevelopmentEntry.png",
+                "template": "OutpostTrading/RegionalDevelopmentEntry.png",
                 "roi": [
                     400,
                     200,
@@ -180,7 +189,7 @@ Pipeline 的核心逻辑是类似**有限状态机（FSM）/决策树（Decision
         "rate_limit": 0,
         "post_wait_freezes": 100,
         "next": [
-            "SellProductLoop"
+            "OutpostTradingLoop"
         ]
     }
 }
@@ -192,11 +201,11 @@ Pipeline 的核心逻辑是类似**有限状态机（FSM）/决策树（Decision
 
 只在必须等画面稳定时才使用 `pre_wait_freezes` 或 `post_wait_freezes`，其他时候应该尽量避免延迟。例如上文中 `"post_wait_freezes": 100` 表示在 `roi` 区域 `[400, 200, 480, 320]` 内像素变化结束后，再等待 100 ms。
 
-下一步 `SellProductLoop` 里应继续用识别节点确认已进入地区建设界面，而不是假设点击一定成功。FSM 最重要的是：先识别、确认当前状态，然后再进行操作。
+下一步 `OutpostTradingLoop` 里应继续用识别节点确认已进入地区建设界面，而不是假设点击一定成功。FSM 最重要的是：先识别、确认当前状态，然后再进行操作。
 
 ```json
 {
-    "SellProductLoop": {
+    "OutpostTradingLoop": {
         "desc": "主循环，仅支持从地区建设界面开始",
         "recognition": "And",
         "all_of": [
@@ -206,9 +215,9 @@ Pipeline 的核心逻辑是类似**有限状态机（FSM）/决策树（Decision
         "post_delay": 0,
         "rate_limit": 0,
         "next": [
-            "SellProductValleyIV",
-            "SellProductWuling",
-            "SellProductTaskEnd"
+            "OutpostTradingValleyIV",
+            "OutpostTradingWuling",
+            "OutpostTradingTaskEnd"
         ]
     }
 }
@@ -267,13 +276,13 @@ Pipeline 的核心逻辑是类似**有限状态机（FSM）/决策树（Decision
 
 ```json
 {
-    "SellProductMain": {
+    "OutpostTradingMain": {
         "desc": "脚本入口",
         "pre_delay": 0,
         "post_delay": 0,
         "rate_limit": 0,
         "next": [
-            "SellProductLoop",
+            "OutpostTradingLoop",
             "[JumpBack]SceneEnterMenuRegionalDevelopment"
         ]
     }
@@ -296,7 +305,7 @@ Pipeline 的核心逻辑是类似**有限状态机（FSM）/决策树（Decision
 - 每改一次 Pipeline，在工具里**重新加载资源**即可，无需重编译。
 - 注意不同帧率（12 fps vs 60 fps）下动画过渡速度不同，可能导致识别时机偏差。
 
-> 如果改了 Go Service，必须先运行 `uv run tools/build_and_install.py`，重新编译。
+> 如果改了 Go Service，必须先运行 `uv run build-and-install`，重新编译。
 
 当前示例使用 **Maa Pipeline Support**（VS Code 插件）：在控制面板打开管理员模式并连接窗口。
 
@@ -321,10 +330,10 @@ Pipeline 跑通后，补齐配套：
 {
     "task": [
         {
-            "name": "SellProduct",
-            "label": "$task.SellProduct.label",
-            "entry": "SellProductMain",
-            "description": "$task.SellProduct.description",
+            "name": "OutpostTrading",
+            "label": "$task.OutpostTrading.label",
+            "entry": "OutpostTradingMain",
+            "description": "$task.OutpostTrading.description",
             "option": [
                 "ValleyIVSell",
                 "WulingSell"
@@ -337,14 +346,27 @@ Pipeline 跑通后，补齐配套：
 }
 ```
 
+### UI 图片资源路径
+
+客户端 UI 可以显示 `assets/resource/` 目录中的图片。`icon` 字段直接填写图片路径；在 `label`、`description` 等支持 Markdown 的字段中，可以使用 Markdown 图片语法插入图片：
+
+```json
+{
+    "icon": "resource/image/UI/Item/item_lbmob_1_lbshamman_1_sp_1_1.png",
+    "description": "![](resource/image/UI/Item/item_char_break_stage_3_4.png)"
+}
+```
+
+图片路径相对于 `assets/` 目录，因此不要包含 `assets/` 前缀，统一从 `resource/` 开始。需要显示物品识别生成的 UI 图标时，按 `resource/image/UI/Item/<物品 ID>.png` 拼接路径，其中 `<物品 ID>` 使用 `assets/data/IconRecognition/recognition_items.json` 的顶层键。
+
 ### i18n 文案
 
 在 `assets/locales/interface/` 中添加任务名称和描述的翻译键。例如：
 
 ```json
 {
-    "task.SellProduct.label": "🛒售卖产品",
-    "task.SellProduct.description": "使用产品在各个据点兑换对应调度券\n您可以在任务选项中启用或停用特定地区的销售功能。"
+    "task.OutpostTrading.label": "🛒据点交易",
+    "task.OutpostTrading.description": "使用货品在各个据点兑换对应调度券\n您可以在任务选项中启用或停用特定地区的销售功能。"
 }
 ```
 
@@ -356,7 +378,7 @@ Pipeline 跑通后，补齐配套：
         "tasks/DijiangRewards.json",
         "tasks/DailyRewards.json",
         "tasks/ClaimSimulationRewards.json",
-        "tasks/SellProduct.json"
+        "tasks/OutpostTrading.json"
     ]
 }
 ```
@@ -408,13 +430,13 @@ git push origin feat/auto-sell-items
 4. 编译 go-service、配置路径。
 
     ```bash
-    uv run tools/build_and_install.py
+    uv run build-and-install
     ```
 
     > 如需同时编译 cpp-algo，请加上 `--cpp-algo` 参数：
     >
     > ```bash
-    > uv run tools/build_and_install.py --cpp-algo
+    > uv run build-and-install --cpp-algo
     > ```
 
 5. 将步骤 2 中解压的 `deps/bin` 内容复制到 `install/maafw/`。

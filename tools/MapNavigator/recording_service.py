@@ -12,7 +12,7 @@ from connection_models import RecordingSessionConfig
 from connectors import build_recording_connector
 import key_listener
 from model import ActionType, PathPoint, PathRecorder, normalize_zone_id
-from runtime import MaaRuntime
+from runtime import MaaRuntime, RESOURCE_DIR
 
 
 StatusCallback = Callable[[str, str], None]
@@ -73,6 +73,7 @@ class RecordingService:
         on_clipboard: ClipboardCallback | None = None,
         on_force_waypoint: ForceWaypointCallback | None = None,
         on_live_position: LivePositionCallback | None = None,
+        enable_hotkeys: bool = True,
     ) -> None:
         self._on_status = on_status
         self._on_finished = on_finished
@@ -81,6 +82,8 @@ class RecordingService:
         self._on_clipboard = on_clipboard
         self._on_force_waypoint = on_force_waypoint
         self._on_live_position = on_live_position
+        self._enable_hotkeys = enable_hotkeys
+        self._hotkeys_started = False
 
         self._recorder = PathRecorder()
         self._runtime = runtime
@@ -149,6 +152,7 @@ class RecordingService:
             self._session.open(
                 build_recording_connector(self._runtime, self._session_config),
                 agent_name="MapLocatorAgent",
+                resource_dirs=[RESOURCE_DIR] if self._session_config.kind == "linux" else None,
                 pipeline_override={
                     "MapLocateNode": {"recognition": "Custom", "custom_recognition": "MapLocateRecognition"}
                 },
@@ -156,13 +160,16 @@ class RecordingService:
             tasker = self._session.tasker
 
             # 预热态：识别引擎已就绪但尚未拿到首个定位，提示用户先别动，避免开头几步被吞。
-            self._on_status(
-                f"● 定位预热中，请保持静止…定位成功后自动开始录制 [{self._session_config.display_name()}]",
-                "#f59e0b",
-            )
-
-            self._register_hotkeys()
-            key_listener.start()
+            if self._enable_hotkeys:
+                self._on_status(
+                    f"● 定位预热中，请保持静止…定位成功后自动开始录制 [{self._session_config.display_name()}]",
+                    "#f59e0b",
+                )
+                self._register_hotkeys()
+                key_listener.start()
+                self._hotkeys_started = True
+            else:
+                self._on_status(f"● 正在启动实时定位… [{self._session_config.display_name()}]", "#3b82f6")
 
             while self._running_event.is_set():
                 tasker.post_task("MapLocateNode").wait()
@@ -306,7 +313,9 @@ class RecordingService:
         self._recorder.update(position.x, position.y, int(ActionType.RUN), position.zone)
 
     def _shutdown_agent(self) -> None:
-        key_listener.stop()
+        if self._hotkeys_started:
+            key_listener.stop()
+            self._hotkeys_started = False
         self._session.close()
 
 

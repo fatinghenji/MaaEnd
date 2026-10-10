@@ -12,33 +12,24 @@
         }
     },
     "GotoTriggerPointMaybeTeleport_WLYinglungPass": {
-        "desc": "判断是否需要传送到最近锚点",
-        "recognition": {
-            "type": "Or",
+        "desc": "强制传送到最近锚点后前往激发点",
+        "action": {
+            "type": "Custom",
             "param": {
-                "any_of": [
-                    "__GotoTriggerPointNearAnchor_WLYinglungPass",
-                    "__GotoTriggerPointNearTrigger_WLYinglungPass"
-                ]
+                "custom_action": "SubTask",
+                "custom_action_param": {
+                    "sub": [
+                        "SceneEnterWorldWulingYinglungPass2"
+                    ]
+                }
             }
         },
-        "inverse": true,
         "next": [
-            "[JumpBack]__GotoTriggerPointTeleportOnce_WLYinglungPass",
             "GotoTriggerPointMove_WLYinglungPass"
         ],
         "focus": {
             "Node.Action.Starting": "✈️准备传送到最近锚点"
         }
-    },
-    "__GotoTriggerPointTeleportOnce_WLYinglungPass": {
-        "max_hit": 1,
-        "pre_delay": 0,
-        "post_delay": 0,
-        "next": [
-            // 距离淤积点最近的锚点：应龙主营（锚点编号按 X 从左到右递增）
-            "SceneEnterWorldWulingYinglungPass2"
-        ]
     },
     "__GotoTriggerPointNearAnchor_WLYinglungPass": {
         "desc": "锚点附近",
@@ -91,34 +82,31 @@
                             "action": "NAVMESH",
                             "target": [
                                 1068.26,
-                                814.83
+                                868.98
                             ]
                         },
-                        [
-                            1068.26,
-                            832.88
-                        ],
-                        [
-                            1068.26,
-                            850.93
-                        ],
-                        [
-                            1068.26,
-                            868.98,
-                            true
-                        ],
-                        [
-                            1068.56,
-                            884.84,
-                            true
-                        ]
+                        {
+                            "action": "INTERACT",
+                            "target": [
+                                1069.0,
+                                884.0
+                            ],
+                            "strict_arrival": true,
+                            "interact_text": {
+                                "node": "__AutoEssenceRecoApproachInteractText"
+                            },
+                            "interact_rec": true
+                        }
                     ]
                 }
             }
         },
         "post_delay": 1500, // 确保彻底停下，规避移动惯性
         "next": [
-            "AutoEssenceInteract"
+            "AutoEssenceDispatcher"
+        ],
+        "on_error": [
+            "[Anchor]AutoEssenceMoveToTriggerPointMaybeTeleport"
         ],
         "focus": {
             "Node.Action.Starting": "🚶正在前往激发点",

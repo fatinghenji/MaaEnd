@@ -5,6 +5,8 @@ from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 
+import json5
+
 
 CATEGORY_TYPE_ORDER = (
     "Ore",
@@ -45,6 +47,14 @@ RETURN_NODES = TransferNodes(
     repo_find_node="ItemTransferFindReturnItemInRepo",
     bag_find_node="ItemTransferFindReturnItemInBag",
 )
+UI_ITEM_DIR = Path(__file__).resolve().parents[3] / "assets" / "resource" / "image" / "UI" / "Item"
+
+
+def build_item_icon(item_id: str) -> str | None:
+    icon_path = UI_ITEM_DIR / f"{item_id}.png"
+    if not icon_path.is_file():
+        return None
+    return f"resource/image/UI/Item/{item_id}.png"
 
 
 def select_transfer_items(catalog: dict) -> list[dict]:
@@ -93,25 +103,27 @@ def build_transfer_cases(catalog: dict, zh_cn: dict, nodes: TransferNodes) -> li
         if not isinstance(name, str) or not name:
             raise ValueError(f"missing zh_cn locale: {locale_key}")
 
-        cases.append(
-            {
-                "name": name,
-                "label": f"${locale_key}",
-                "pipeline_override": {
-                    nodes.category_node: {
-                        "template": f"ItemTransfer/{item['categoryType']}.png",
-                    },
-                    nodes.repo_find_node: _item_id_override(
-                        item["id"],
-                        f"{item['storageKind']}:{item['categoryType']}",
-                    ),
-                    nodes.bag_find_node: _item_id_override(
-                        item["id"],
-                        f"{item['storageKind']}:{item['categoryType']}",
-                    ),
+        case = {
+            "name": name,
+            "label": f"${locale_key}",
+            "pipeline_override": {
+                nodes.category_node: {
+                    "template": f"ItemTransfer/{item['categoryType']}.png",
                 },
-            }
-        )
+                nodes.repo_find_node: _item_id_override(
+                    item["id"],
+                    f"{item['storageKind']}:{item['categoryType']}",
+                ),
+                nodes.bag_find_node: _item_id_override(
+                    item["id"],
+                    f"{item['storageKind']}:{item['categoryType']}",
+                ),
+            },
+        }
+        icon = build_item_icon(item["id"])
+        if icon is not None:
+            case["icon"] = icon
+        cases.append(case)
     return cases
 
 
@@ -127,17 +139,18 @@ def update_item_transfer_task(
 
 
 def generate_item_transfer_task(catalog_path: Path, locale_path: Path, task_path: Path) -> int:
-    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
-    zh_cn = json.loads(locale_path.read_text(encoding="utf-8"))
-    task = json.loads(task_path.read_text(encoding="utf-8"))
+    catalog = json5.loads(catalog_path.read_text(encoding="utf-8"))
+    zh_cn = json5.loads(locale_path.read_text(encoding="utf-8"))
+    task = json5.loads(task_path.read_text(encoding="utf-8"))
 
     forward_cases = build_transfer_cases(catalog, zh_cn, FORWARD_NODES)
     return_cases = build_transfer_cases(catalog, zh_cn, RETURN_NODES)
     updated = update_item_transfer_task(task, forward_cases, return_cases)
-    task_path.write_text(
-        json.dumps(updated, ensure_ascii=False, indent=4) + "\n",
-        encoding="utf-8",
-    )
+    if updated != task:
+        task_path.write_text(
+            json.dumps(updated, ensure_ascii=False, indent=4) + "\n",
+            encoding="utf-8",
+        )
     return len(forward_cases)
 
 

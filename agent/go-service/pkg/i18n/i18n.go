@@ -11,6 +11,7 @@ import (
 	"sync"
 	"text/template"
 
+	"github.com/MaaXYZ/MaaEnd/agent/go-service/pkg/jsonclean"
 	"github.com/MaaXYZ/MaaEnd/agent/go-service/pkg/pienv"
 	"github.com/rs/zerolog/log"
 )
@@ -29,12 +30,10 @@ const (
 
 var htmlTemplates = map[string]string{
 	"tasker.process_warning":                  "HTML/process-warning.html",
+	"tasker.multi_instance_warning":           "HTML/multi-instance-warning.html",
 	"tasker.task_failed_feedback_hint":        "HTML/task-failed-feedback.html",
 	"tasker.hdr_warning":                      "HTML/hdr-warning.html",
 	"tasker.aspect_ratio_warning":             "HTML/aspect-ratio-warning.html",
-	"maptracker.emergency_stop":               "HTML/emergency-stop.html",
-	"maptracker.navigation_moving":            "HTML/navigation-moving.html",
-	"maptracker.navigation_finished":          "HTML/navigation-finished.html",
 	"essencefilter.loot_summary":              "HTML/essencefilter-loot-summary.html",
 	"essencefilter.init_weapons":              "HTML/essencefilter-init-weapons.html",
 	"essencefilter.init_skills":               "HTML/essencefilter-init-skills.html",
@@ -52,6 +51,8 @@ var htmlTemplates = map[string]string{
 	"autoecofarm.interruptible_sleep_done":    "HTML/interruptible-sleep-done.html",
 	"autoecofarm.interruptible_sleep_stopped": "HTML/interruptible-sleep-stopped.html",
 	"dijiangrewards.wait_exchange_countdown":  "HTML/dijiangrewards-wait-exchange-countdown.html",
+	"ims.sync_item_summary":                   "HTML/ims-sync-item-summary.html",
+	"ims.add_item_summary":                    "HTML/ims-add-item-summary.html",
 }
 
 var (
@@ -123,7 +124,7 @@ func loadMessages(dir, lang string) map[string]string {
 		}
 
 		var loaded map[string]string
-		if err := json.Unmarshal(data, &loaded); err != nil {
+		if err := json.Unmarshal(jsonclean.Clean(data), &loaded); err != nil {
 			log.Warn().Err(err).Str("lang", targetLang).Str("dir", dir).Msg("failed to parse i18n messages")
 			return false
 		}

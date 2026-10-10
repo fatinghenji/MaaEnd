@@ -6,13 +6,25 @@ import argparse
 import json
 import shutil
 from collections import OrderedDict
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from PIL import Image
+
 from catalog import build_catalog, write_catalog
-from download import validate_icon_png_bytes
+from download import apply_item_blacklist, load_big_icon_ids, rarity_directories, validate_icon_png_bytes
 from fixed_items import FIXED_ITEMS
-from localization import LOCALE_MAP, build_locale_values, generate_locales, load_json_object
+from localization import (
+    LOCALE_MAP,
+    build_locale_values,
+    build_source_index,
+    generate_locales,
+    load_json_object,
+    update_interface_locale,
+)
+from text import validate_identifier
+from ui_icons.generate import generate_ui_icons
 
 
 @dataclass(frozen=True)
@@ -42,13 +54,172 @@ def default_publish_paths(repo_root: str | Path | None = None) -> PublishPaths:
     )
 
 
+def sync_published_images(
+    image_root: Path,
+    asset_image_root: Path,
+    catalog: dict[str, dict[str, object]],
+    item_source: Mapping[str, object],
+    removed_items: Sequence[Mapping[str, object]] = (),
+) -> set[str]:
+    """按 catalog 同步图标并清理不再使用的已发布图标。"""
+    expected_images: set[Path] = set()
+    referenced_icon_ids: set[str] = set()
+    for record in catalog.values():
+        icon_id = str(record["iconId"])
+        expected_images.add(Path(str(record["rarity"])) / f"{icon_id}.png")
+        referenced_icon_ids.add(icon_id)
+
+    # 流体物品本身不进入 catalog，稀有度必须以 item.json 的源记录为准。
+    source_by_icon_id = {
+        record.get("iconId"): record
+        for record in item_source.values()
+        if isinstance(record, Mapping) and isinstance(record.get("iconId"), str)
+    }
+    for record in catalog.values():
+        fluid_icon_id = record.get("fluidIconId")
+        if not isinstance(fluid_icon_id, str) or not fluid_icon_id:
+            continue
+        fluid_source = source_by_icon_id.get(fluid_icon_id)
+        if fluid_source is None:
+            raise ValueError(f"item.json 找不到流体图标对应物品: {fluid_icon_id}")
+        referenced_icon_ids.add(fluid_icon_id)
+        expected_images.add(
+            Path(str(fluid_source["rarity"])) / f"{fluid_icon_id}.png"
+        )
+    asset_image_root.mkdir(parents=True, exist_ok=True)
+
+    # 黑名单物品可能与正常物品共用图标;只有当前 catalog 完全不再引用时才能删除。
+    for removal in removed_items:
+        icon_id = removal.get("iconId")
+        if not isinstance(icon_id, str) or not icon_id:
+            continue
+        icon_id = validate_identifier(icon_id, field="黑名单移除项.iconId")
+        if icon_id in referenced_icon_ids:
+            continue
+        for rarity_directory in rarity_directories(asset_image_root):
+            stale = rarity_directory / f"{icon_id}.png"
+            if stale.is_file():
+                stale.unlink()
+
+    changed_icon_ids: set[str] = set()
+    for relative_path in expected_images:
+        destination = asset_image_root / relative_path
+        source = image_root / relative_path
+        stale_paths = []
+        for rarity_directory in rarity_directories(asset_image_root):
+            path = rarity_directory / relative_path.name
+            if path.is_file() and path != destination:
+                stale_paths.append(path)
+        if destination.exists():
+            for stale in stale_paths:
+                stale.unlink()
+            if source.is_file() and not _same_image_pixels(source, destination):
+                shutil.copy2(source, destination)
+                changed_icon_ids.add(relative_path.stem)
+            continue
+        if len(stale_paths) == 1:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            stale_paths[0].replace(destination)
+            if source.is_file() and not _same_image_pixels(source, destination):
+                shutil.copy2(source, destination)
+            changed_icon_ids.add(relative_path.stem)
+            continue
+        if not source.is_file():
+            continue
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+        changed_icon_ids.add(relative_path.stem)
+    return changed_icon_ids
+
+
+def sync_published_big_images(
+    image_root: Path,
+    asset_image_root: Path,
+    catalog: Mapping[str, Mapping[str, object]],
+    big_icon_ids: set[str],
+) -> None:
+    source_root = image_root.parent / "big_images"
+    target_root = asset_image_root / "Big"
+    expected: set[Path] = set()
+    for record in catalog.values():
+        icon_id = str(record["iconId"])
+        if icon_id not in big_icon_ids:
+            continue
+        relative_path = Path(str(record["rarity"])) / f"{icon_id}.png"
+        source = source_root / relative_path
+        if not source.is_file():
+            raise FileNotFoundError(f"大图名单中的下载缓存不存在: {source}")
+        validate_icon_png_bytes(source.read_bytes())
+        target = target_root / relative_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if not target.is_file() or not _same_image_pixels(source, target):
+            shutil.copy2(source, target)
+        expected.add(relative_path)
+    if target_root.is_dir():
+        for rarity_directory in rarity_directories(target_root):
+            for path in rarity_directory.glob("*.png"):
+                if path.relative_to(target_root) not in expected:
+                    path.unlink()
+
+
+def _same_image_pixels(source: Path, destination: Path) -> bool:
+    if source.read_bytes() == destination.read_bytes():
+        return True
+    try:
+        with Image.open(source) as source_image, Image.open(destination) as existing:
+            return (
+                source_image.size == existing.size
+                and source_image.convert("RGBA").tobytes()
+                == existing.convert("RGBA").tobytes()
+            )
+    except OSError:
+        return False
+
+
 def publish(paths: PublishPaths) -> tuple[int, dict[str, int]]:
+    previous_catalog = (
+        load_json_object(paths.catalog_output)
+        if paths.catalog_output.is_file()
+        else {}
+    )
     source = json.loads(paths.item_source.read_text(encoding="utf-8-sig"), object_pairs_hook=OrderedDict)
     if not isinstance(source, dict):
         raise ValueError(f"JSON 顶层必须是对象: {paths.item_source}")
+    source, removals = apply_item_blacklist(source)
     catalog = build_catalog(source, paths.image_root)
+    localization_source = build_source_index(
+        load_json_object(paths.localization_item_source),
+        load_json_object(paths.weapon_source),
+    )
+    zh_cn_values = build_locale_values(
+        catalog,
+        localization_source,
+        "CN",
+        load_json_object(paths.language_root / "lang_zh-CN.json"),
+    )
+    for item_id, record in catalog.items():
+        record["name"] = zh_cn_values[f"iconRecognition.name.{item_id}"]
+    changed_icon_ids = sync_published_images(
+        paths.image_root,
+        paths.asset_image_root,
+        catalog,
+        source,
+        removals,
+    )
+    sync_published_big_images(paths.image_root, paths.asset_image_root, catalog, load_big_icon_ids())
     paths.catalog_output.parent.mkdir(parents=True, exist_ok=True)
     write_catalog(catalog, paths.catalog_output)
+    refresh_item_ids = {
+        item_id
+        for item_id, record in catalog.items()
+        if record["iconId"] in changed_icon_ids
+        or record.get("fluidIconId") in changed_icon_ids
+        or any(
+            previous_catalog.get(item_id, {}).get(field) != record.get(field)
+            for field in ("iconId", "rarity", "fluidIconId")
+        )
+    }
+    generate_ui_icons(refresh_item_ids=refresh_item_ids)
     locale_counts = generate_locales(
         paths.catalog_output,
         paths.localization_item_source,
@@ -72,15 +243,11 @@ def publish_fixed_items(paths: PublishPaths) -> int:
         }
         for item_id, payload in FIXED_ITEMS.items()
     }
-    rarity_directories = (
-        [path for path in paths.asset_image_root.iterdir() if path.is_dir()]
-        if paths.asset_image_root.is_dir()
-        else []
-    )
+    existing_rarity_directories = rarity_directories(paths.asset_image_root)
     for payload in FIXED_ITEMS.values():
         source = paths.image_root / str(payload["rarity"]) / f"{payload['iconId']}.png"
         validate_icon_png_bytes(source.read_bytes())
-        for rarity_directory in rarity_directories:
+        for rarity_directory in existing_rarity_directories:
             stale = rarity_directory / source.name
             expected = paths.asset_image_root / str(payload["rarity"]) / source.name
             if stale.is_file() and stale != expected:
@@ -92,20 +259,23 @@ def publish_fixed_items(paths: PublishPaths) -> int:
     fixed_catalog = build_catalog(fixed_source, paths.asset_image_root)
     if len(fixed_catalog) != len(FIXED_ITEMS):
         raise ValueError("固定物品图标未完整生成 catalog")
-    catalog = load_json_object(paths.catalog_output)
-    catalog.update(fixed_catalog)
-    write_catalog(OrderedDict(sorted(catalog.items())), paths.catalog_output)
-
+    zh_cn_values = build_locale_values(
+        fixed_catalog,
+        {},
+        "CN",
+        load_json_object(paths.language_root / "lang_zh-CN.json"),
+    )
     for locale, (weapon_language, path_language) in LOCALE_MAP.items():
         translations = load_json_object(paths.language_root / f"lang_{path_language}.json")
         values = build_locale_values(fixed_catalog, {}, weapon_language, translations)
         locale_path = paths.locale_root / f"{locale}.json"
-        interface = load_json_object(locale_path)
-        interface.update(values)
-        locale_path.write_text(
-            json.dumps(interface, ensure_ascii=False, indent=4) + "\n",
-            encoding="utf-8",
-        )
+        update_interface_locale(locale_path, values, remove_stale=False)
+
+    for item_id, record in fixed_catalog.items():
+        record["name"] = zh_cn_values[f"iconRecognition.name.{item_id}"]
+    catalog = load_json_object(paths.catalog_output)
+    catalog.update(fixed_catalog)
+    write_catalog(OrderedDict(sorted(catalog.items())), paths.catalog_output)
     return len(fixed_catalog)
 
 

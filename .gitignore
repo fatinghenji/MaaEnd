@@ -367,6 +367,7 @@ paket-files/
 # Python Tools for Visual Studio (PTVS)
 __pycache__/
 *.pyc
+*.egg-info/
 
 # Cake - Uncomment if you are using it
 # tools/**
@@ -428,8 +429,10 @@ FodyWeavers.xsd
 # Local History for Visual Studio Code
 .history/
 
-# Claude Code
+# Coding Agents
 .claude/*
+.sisyphus/
+.workbuddy*/
 
 # Windows Installer files from build outputs
 *.cab
@@ -456,6 +459,7 @@ install/
 maafw/*
 mxu*
 deps
+deps-android
 3rdparty
 
 config
@@ -483,5 +487,7 @@ venv/
 # maa-tools
 tests/maatools
 
-# oh-my-opencode
-.sisyphus/
+# Android 客户端：agent 产物在子模块外，必须在这里忽略
+Android/agent-dist/
+*.jks
+*.jks.b64

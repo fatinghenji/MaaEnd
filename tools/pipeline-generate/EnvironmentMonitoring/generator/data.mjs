@@ -12,16 +12,23 @@ function toFlexibleEnglishRegex(text) {
     return `(?i)${escaped.replace(/\s+/g, "\\s*").replace(/-/g, "\\s*-\\s*")}`;
 }
 
-function buildExpectedFromLocaleMap(localeMap) {
+// 移动端 OCR 对拍照任务标题里的引号识别不稳定：可能认成别的字符，也可能整个丢掉。
+// 把引号放宽成「任意单字符、可缺省」，落在末尾的那一个直接去掉（后面没有内容可对齐）。
+// 英文已经过 escapeRegex，但它不转义引号，所以各语言的引号都按原字符匹配。
+const UNSTABLE_QUOTE_PATTERN = /["'“”‘’「」『』]/g;
+
+function toQuoteTolerantExpected(expected) {
+    return expected.replace(UNSTABLE_QUOTE_PATTERN, ".?").replace(/\.\?$/, "");
+}
+
+function buildExpectedFromLocaleMap(localeMap, {looseQuotes = false} = {}) {
     return LOCALES.map((locale) => {
         const value = localeMap?.[locale];
         if (!value) {
             return null;
         }
-        if (locale === "en_us") {
-            return toFlexibleEnglishRegex(value);
-        }
-        return value;
+        const expected = locale === "en_us" ? toFlexibleEnglishRegex(value) : value;
+        return looseQuotes ? toQuoteTolerantExpected(expected) : expected;
     }).filter(Boolean);
 }
 
@@ -76,6 +83,16 @@ export function buildRow(mission) {
         ? `前往${Name}传送点，${AfterTeleportDescription}`
         : `不在${Name}任务开始位置附近，${AfterTeleportDescription}`;
     const MoveDescription = route.IsDirectPhoto ? `在${Name}传送点调整拍照朝向` : `自动寻路前往${Name}`;
+    // 沿途稳定遇敌的线路先清场，再沿独立归位路线返回拍照点。
+    // AutoFight 自带进战识别，没打起来时直接落到归位节点。
+    const MoveNext = route.FightAfterMove
+        ? [
+              "[JumpBack]AutoFight",
+              `GoTo${Id}MoveAfterFight`,
+          ]
+        : [
+              `${Id}TakePhoto`,
+          ];
 
     return {
         Station,
@@ -87,7 +104,7 @@ export function buildRow(mission) {
         MapAssertRecognition: route.MapAssertRecognition,
         MapAssertParam: rawJson(route.MapAssertParam),
         ExpectedText: buildExpectedFromLocaleMap(LocalizedName),
-        InExpectedText: buildExpectedFromLocaleMap(ShotTargetName),
+        InExpectedText: buildExpectedFromLocaleMap(ShotTargetName, {looseQuotes: true}),
         OcrReplace: rawJson(route.Replace),
         TrackOrGoToNext: rawJson(TrackOrGoToNext),
         AfterTrackNext: rawJson(afterTrackNext),
@@ -95,10 +112,12 @@ export function buildRow(mission) {
         GoToNext: rawJson(GoToNext),
         GoToNotAtStartPosDescription,
         MoveDescription,
+        MoveNext: rawJson(MoveNext),
         AfterTeleportDescription,
         AfterTeleportNext: rawJson(AfterTeleportNext),
         RouteAction: route.RouteAction,
         RouteActionParam: rawJson(route.RouteActionParam),
+        FightAfterMoveRouteActionParam: rawJson(route.FightAfterMoveRouteActionParam ?? route.RouteActionParam),
     };
 }
 

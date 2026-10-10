@@ -47,10 +47,12 @@ MaaBool MAA_CALL MapNavigateActionRun(
     // 文字表指了节点的交互点在这里解析: pipeline 已经问得到, 而且还没开始走。
     ResolveInteractTextNodes(context, param);
     param.zipline_enabled = ResolveZiplineEnabled(context, param.zipline_enabled);
+    if (param.zipline_enabled) {
+        param.zipline_account_id = ResolveZiplineAccountId(context);
+    }
 
-    // Native entry plans on the navmesh base mesh, so normalize live fixes onto the navmesh base-pixel
-    // frame using the navmesh's own baked tier affine. The Compatible entry leaves this off (its frame
-    // is the MapTracker base-px), keeping that path byte-identical.
+    // Planning runs on the navmesh base mesh, so normalize live fixes onto the navmesh base-pixel
+    // frame using the navmesh's own baked tier affine.
     param.normalize_position_via_navmesh = true;
 
     NaviController controller(context);

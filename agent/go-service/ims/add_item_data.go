@@ -2,13 +2,12 @@ package ims
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
-	"github.com/MaaXYZ/MaaEnd/agent/go-service/pkg/i18n"
 	"github.com/MaaXYZ/MaaEnd/agent/go-service/pkg/iconqty"
-	"github.com/MaaXYZ/MaaEnd/agent/go-service/pkg/maafocus"
 	maa "github.com/MaaXYZ/maa-framework-go/v4"
 	"github.com/rs/zerolog/log"
 )
@@ -40,14 +39,18 @@ type addItemDataParam struct {
 // OCR quantities into the IMS cache (A3). Does not change readiness / last_sync.
 //
 // If IMS has never been initialized (hasData=false), recognition still runs and
-// per-item Focus is printed; cache write is skipped and the action returns
+// one HTML Focus summary is printed; cache write is skipped and the action returns
 // success so Pipeline can continue (e.g. closing the rewards UI). No IMS
-// init / summary Focus is printed in either case.
+// init Focus is printed in either case.
 //
 // Finding no reward cards (IconRecognition no_match / grid_detection_failed)
-// is also success. A failed disk hydrate is treated like an uninitialized
-// cache: recognize and Focus, skip write, still return true. A3 must not
-// block the close-rewards next node.
+// is also success. A missing or invalid recognition_items.json is logged and
+// treated as no hits whether it fails while resolving item_ids or inside
+// IconRecognition, so the close-rewards next node still runs. Illegal
+// parameters (bad JSON, empty or duplicate entries, unknown item_id) still
+// fail the action. Corrupt IMS.json is reset by ensureHydrated. Any remaining
+// hydrate error is treated like an uninitialized cache: recognize and Focus,
+// skip write, still return true. A3 must not block the close-rewards next node.
 //
 // Best practice: run as the action of a node that recognizes CloseRewardsButton,
 // then next to a Click node that closes the rewards UI.
@@ -78,8 +81,8 @@ func (a *AddItemData) Run(ctx *maa.Context, arg *maa.CustomActionArg) bool {
 
 	cacheReady := false
 	if err := ensureHydrated(); err != nil {
-		// A3 does not require a usable cache; a corrupt IMS.json must not
-		// block closing the rewards UI.
+		// Remaining hydrate errors (not corrupt-file, which ensureHydrated resets)
+		// must not block closing the rewards UI.
 		log.Warn().
 			Err(err).
 			Str("component", componentAddItemData).
@@ -114,8 +117,8 @@ func (a *AddItemData) Run(ctx *maa.Context, arg *maa.CustomActionArg) bool {
 		log.Error().
 			Err(err).
 			Str("component", componentAddItemData).
-			Msg("failed to cache image")
-		return false
+			Msg("failed to cache image, skip reward update")
+		return true
 	}
 
 	scanFilters, scanIDs, err := resolveAddItemDataCandidates(params.ItemFilters, params.ItemIDs)
@@ -127,6 +130,9 @@ func (a *AddItemData) Run(ctx *maa.Context, arg *maa.CustomActionArg) bool {
 			Strs("item_filters", params.ItemFilters).
 			Strs("item_ids", params.ItemIDs).
 			Msg("failed to resolve reward candidates")
+		if errors.Is(err, errRecognitionCatalogUnavailable) {
+			return true
+		}
 		return false
 	}
 
@@ -145,12 +151,13 @@ func (a *AddItemData) Run(ctx *maa.Context, arg *maa.CustomActionArg) bool {
 			Str("grid_type", gridType).
 			Strs("item_filters", scanFilters).
 			Strs("item_ids", scanIDs).
-			Msg("failed to recognize reward icons")
-		return false
+			Msg("failed to recognize reward icons, skip reward update")
+		return true
 	}
 
 	addedTotal := 0
 	applied := 0
+	pageReport := make(map[string]int)
 	var (
 		persistItems map[string]int
 		lastSync     time.Time
@@ -166,7 +173,7 @@ func (a *AddItemData) Run(ctx *maa.Context, arg *maa.CustomActionArg) bool {
 			continue
 		}
 		displayName := iconqty.ItemDisplayName(h.ItemID)
-		maafocus.Print(ctx, i18n.T("ims.add_item_found", displayName, h.Qty))
+		pageReport[h.ItemID] += h.Qty
 		addedTotal += h.Qty
 		applied++
 
@@ -200,15 +207,18 @@ func (a *AddItemData) Run(ctx *maa.Context, arg *maa.CustomActionArg) bool {
 			log.Error().
 				Err(err).
 				Str("component", componentAddItemData).
-				Msg("failed to persist item quantities")
-			return false
+				Msg("failed to persist item quantities, skip reward update")
+			return true
 		}
 	}
+
+	reportedItemCount := reportAddedItems(ctx, pageReport)
 
 	log.Info().
 		Str("component", componentAddItemData).
 		Int("hit_count", applied).
 		Int("added_total", addedTotal).
+		Int("reported_item_count", reportedItemCount).
 		Bool("cache_ready", cacheReady).
 		Str("grid_type", gridType).
 		Strs("item_filters", scanFilters).

@@ -11,7 +11,7 @@ MaaEnd 基于 [MaaFramework](https://github.com/MaaXYZ/MaaFramework)，主体流
 1. `assets/interface.json` — 定义项目入口、控制器、资源、任务导入列表、Agent 启动项。
 2. `assets/tasks/**/*.json` — 定义任务在 UI 里的展示、入口节点、可选项。
 3. `assets/resource/pipeline/**/*.json` — 定义"识别什么、点哪里、下一步去哪"。**日常开发最常改的一层。**
-4. `agent/go-service/**` — 仅放 Pipeline 难以表达的复杂逻辑（复杂识别、计算、遍历、特殊交互）。
+4. `agent/go-service/**` — 仅放 Pipeline 难以表达的复杂逻辑（复杂识别、计算、遍历、特殊交互）。跨业务复用的工具在 `agent/go-service/pkg/`，见 [Go Service `pkg/` 公共包](./go-service-pkg.md)。
 
 一条任务的执行路径：
 
@@ -27,6 +27,7 @@ MaaEnd 基于 [MaaFramework](https://github.com/MaaXYZ/MaaFramework)，主体流
 | 任务编排、入口节点、UI 选项 | `assets/tasks/**/*.json` |
 | 识别、点击、跳转、等待、流程细节 | `assets/resource/pipeline/**/*.json` |
 | 复杂逻辑（算法、遍历、计算） | `agent/go-service/**` |
+| 跨业务通用工具（And 解包、表达式、OCR 数值、i18n…） | `agent/go-service/pkg/**`（[文档](./go-service-pkg.md)） |
 
 ## Pipeline 可复用节点
 
@@ -51,7 +52,6 @@ MaaEnd 基于 [MaaFramework](https://github.com/MaaXYZ/MaaFramework)，主体流
 | BetterSliding | 离散数量滑条调节 | [components/better-sliding.md](./components/better-sliding.md) |
 | MapLocator | AI + CV 小地图定位 | [components/map-locator.md](./components/map-locator.md) |
 | MapNavigator | 自动寻路：给定目标坐标免录制直达，含交互/过图的路线支持录制 | [components/map-navigator.md](./components/map-navigator.md) |
-| MapTracker | 小地图追踪与路径移动 | [components/map-tracker.md](./components/map-tracker.md) |
 | WorldMap | 大地图坐标识别：给定区域与底图坐标，确认图标后交回屏幕位置 | [components/world-map.md](./components/world-map.md) |
 | RecoGrid / GridTracker / EssenceGrid | C++ 单帧网格识别、跨帧追踪与基质业务适配 | [components/recogrid-engine.md](./components/recogrid-engine.md) |
 | IconRecognition | C++ 物品图标识别、固定 ROI 和 Maa Custom Recognition | [components/icon-recognition.md](./components/icon-recognition.md) |

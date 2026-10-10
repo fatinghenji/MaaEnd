@@ -4,13 +4,15 @@
  *
  * A `PathPoint` is a plain object:
  *   { x:number, y:number, action:number, actions:number[], zone:string, strict:boolean,
- *     required?:true, target_tier?:string, auto_portal?:true, suppress_auto_portal?:true }
+ *     required?:true, target_tier?:string, target_deck_y?:number,
+ *     find_target?:string, find_text?:string[], find_stop?:string, find_arrive?:number[],
+ *     trigger_node?:string, auto_portal?:true, suppress_auto_portal?:true }
  * Invariant on `actions`: either `[RUN]` or a list of non-RUN/NONE actions; `action`
  * always mirrors the last element of the normalised chain.
  * @module model
  */
 
-import { roundHalfEven } from './rounding.js';
+import {roundHalfEven} from "./rounding.js";
 
 /** Action-type enum (parallels `model.ActionType`). Plain numbers — no TS enum. */
 export const ActionType = Object.freeze({
@@ -25,52 +27,60 @@ export const ActionType = Object.freeze({
   COLLECT: 7,
   DIG: 8,
   NAVMESH: 9,
+  FIND: 10,
+  TRIGGER: 11,
 });
 
 const VALID_ACTION_INTS = new Set(Object.values(ActionType));
 
 /** @type {Object<number,string>} node fill colour per action. */
 export const ACTION_COLORS = {
-  [ActionType.NONE]: '#64748b',
-  [ActionType.RUN]: '#2563eb',
-  [ActionType.SPRINT]: '#f97316',
-  [ActionType.JUMP]: '#00ffff',
-  [ActionType.FIGHT]: '#a855f7',
-  [ActionType.INTERACT]: '#10b981',
-  [ActionType.PORTAL]: '#eab308',
-  [ActionType.TRANSFER]: '#ff00ff',
-  [ActionType.COLLECT]: '#ff0000',
-  [ActionType.DIG]: '#7c2d12',
-  [ActionType.NAVMESH]: '#ffffff',
+  [ActionType.NONE]: "#64748b",
+  [ActionType.RUN]: "#2563eb",
+  [ActionType.SPRINT]: "#f97316",
+  [ActionType.JUMP]: "#00ffff",
+  [ActionType.FIGHT]: "#a855f7",
+  [ActionType.INTERACT]: "#10b981",
+  [ActionType.PORTAL]: "#eab308",
+  [ActionType.TRANSFER]: "#ff00ff",
+  [ActionType.COLLECT]: "#ff0000",
+  [ActionType.DIG]: "#7c2d12",
+  [ActionType.NAVMESH]: "#ffffff",
+  [ActionType.FIND]: "#e11d48",
+  [ActionType.TRIGGER]: "#84cc16",
 };
 
 /** @type {Object<number,string>} display name per action. */
 export const ACTION_NAMES = {
-  [ActionType.NONE]: 'None',
-  [ActionType.RUN]: 'Run',
-  [ActionType.SPRINT]: 'Sprint',
-  [ActionType.JUMP]: 'Jump',
-  [ActionType.FIGHT]: 'Fight',
-  [ActionType.INTERACT]: 'Interact',
-  [ActionType.PORTAL]: 'Portal',
-  [ActionType.TRANSFER]: 'Transfer',
-  [ActionType.COLLECT]: 'Collect',
-  [ActionType.DIG]: 'Dig',
-  [ActionType.NAVMESH]: 'Navmesh',
+  [ActionType.NONE]: "None",
+  [ActionType.RUN]: "Run",
+  [ActionType.SPRINT]: "Sprint",
+  [ActionType.JUMP]: "Jump",
+  [ActionType.FIGHT]: "Fight",
+  [ActionType.INTERACT]: "Interact",
+  [ActionType.PORTAL]: "Portal",
+  [ActionType.TRANSFER]: "Transfer",
+  [ActionType.COLLECT]: "Collect",
+  [ActionType.DIG]: "Dig",
+  [ActionType.NAVMESH]: "Navmesh",
+  [ActionType.FIND]: "Find",
+  [ActionType.TRIGGER]: "Trigger",
 };
 
-/** @type {Object<number,string>} export token per action (RUN..NAVMESH; NONE has none). */
+/** @type {Object<number,string>} export token per action (RUN..TRIGGER; NONE has none). */
 export const ACTION_TOKENS = {
-  [ActionType.RUN]: 'RUN',
-  [ActionType.SPRINT]: 'SPRINT',
-  [ActionType.JUMP]: 'JUMP',
-  [ActionType.FIGHT]: 'FIGHT',
-  [ActionType.INTERACT]: 'INTERACT',
-  [ActionType.PORTAL]: 'PORTAL',
-  [ActionType.TRANSFER]: 'TRANSFER',
-  [ActionType.COLLECT]: 'COLLECT',
-  [ActionType.DIG]: 'DIG',
-  [ActionType.NAVMESH]: 'NAVMESH',
+  [ActionType.RUN]: "RUN",
+  [ActionType.SPRINT]: "SPRINT",
+  [ActionType.JUMP]: "JUMP",
+  [ActionType.FIGHT]: "FIGHT",
+  [ActionType.INTERACT]: "INTERACT",
+  [ActionType.PORTAL]: "PORTAL",
+  [ActionType.TRANSFER]: "TRANSFER",
+  [ActionType.COLLECT]: "COLLECT",
+  [ActionType.DIG]: "DIG",
+  [ActionType.NAVMESH]: "NAVMESH",
+  [ActionType.FIND]: "FIND",
+  [ActionType.TRIGGER]: "TRIGGER",
 };
 
 /** @type {Object<string,number>} upper-case token → action int. */
@@ -86,9 +96,11 @@ export const ACTION_NAME_LOOKUP = {
   COLLECT: ActionType.COLLECT,
   DIG: ActionType.DIG,
   NAVMESH: ActionType.NAVMESH,
+  FIND: ActionType.FIND,
+  TRIGGER: ActionType.TRIGGER,
 };
 
-/** Actions shown in the UI dropdown, in order (RUN..NAVMESH). */
+/** Actions shown in the UI dropdown, in order (RUN..TRIGGER). */
 export const ACTION_MENU_TYPES = [
   ActionType.RUN,
   ActionType.SPRINT,
@@ -100,6 +112,8 @@ export const ACTION_MENU_TYPES = [
   ActionType.COLLECT,
   ActionType.DIG,
   ActionType.NAVMESH,
+  ActionType.FIND,
+  ActionType.TRIGGER,
 ];
 
 /** @type {string[]} dropdown labels matching {@link ACTION_MENU_TYPES}. */
@@ -107,18 +121,18 @@ export const ACTION_MENU_NAMES = ACTION_MENU_TYPES.map((t) => ACTION_NAMES[t]);
 
 /** Base-nav display zone → (dir, region, file) under assets/resource/image. */
 export const BASE_NAV_ZONE_IMAGE_PARTS = {
-  map01base: ['MapLocator', 'ValleyIV', 'Base.png'],
-  map02base: ['MapLocator', 'Wuling', 'Base.png'],
-  base01: ['MapLocator', 'OMVBase', 'OMVBase01.png'],
-  dung01: ['MapLocator', 'Dung', 'Dung01Base.png'],
-  indie_dg005: ['MapLocator', 'IndieDg005', 'IndieDg005Base.png'],
-  indie_dg007: ['MapLocator', 'IndieDg007', 'IndieDg007Base.png'],
+  map01base: ["MapLocator", "ValleyIV", "Base.png"],
+  map02base: ["MapLocator", "Wuling", "Base.png"],
+  base01: ["MapLocator", "OMVBase", "OMVBase01.png"],
+  dung01: ["MapLocator", "Dung", "Dung01Base.png"],
+  indie_dg005: ["MapLocator", "IndieDg005", "IndieDg005Base.png"],
+  indie_dg007: ["MapLocator", "IndieDg007", "IndieDg007Base.png"],
 };
 
 /** @type {string[]} */
 export const BASE_NAV_DISPLAY_ZONE_IDS = Object.keys(BASE_NAV_ZONE_IMAGE_PARTS);
 
-const INVALID_ZONE_IDS = new Set(['NONE', 'NULL', 'N/A']);
+const INVALID_ZONE_IDS = new Set(["NONE", "NULL", "N/A"]);
 
 /**
  * @param {number[]} a
@@ -148,12 +162,12 @@ function normalizeActionChain(actions) {
  * @returns {number|null}
  */
 export function tryParseActionType(value) {
-  if (typeof value === 'boolean') return null;
-  if (typeof value === 'number') {
+  if (typeof value === "boolean") return null;
+  if (typeof value === "number") {
     if (Number.isInteger(value)) return VALID_ACTION_INTS.has(value) ? value : null;
     return null; // non-integer float → no match (Python falls through to None)
   }
-  if (typeof value !== 'string') return null;
+  if (typeof value !== "string") return null;
 
   const text = value.trim();
   if (!text) return null;
@@ -200,12 +214,36 @@ export function coerceActionChain(value, def = ActionType.RUN) {
  * @param {string} [def='']
  * @returns {string}
  */
-export function normalizeZoneId(value, def = '') {
-  if (typeof value !== 'string') return def;
+export function normalizeZoneId(value, def = "") {
+  if (typeof value !== "string") return def;
   const zoneId = value.trim();
   if (!zoneId) return def;
   if (INVALID_ZONE_IDS.has(zoneId.toUpperCase())) return def;
   return zoneId;
+}
+
+/**
+ * Match an authored target_deck_y to the nearest probed surface using the runtime's
+ * 2 px deck band. Returns that surface's canonical height, or null when none match.
+ * @param {Array<{height:number}>} decks
+ * @param {unknown} targetDeckY
+ * @param {number} [tolerance=2.0]
+ * @returns {?number}
+ */
+export function matchTargetDeckHeight(decks, targetDeckY, tolerance = 2.0) {
+  if (typeof targetDeckY !== "number" || !Number.isFinite(targetDeckY)) return null;
+  let matched = null;
+  let bestDistance = Infinity;
+  for (const deck of decks) {
+    const height = Number(deck && deck.height);
+    if (!Number.isFinite(height)) continue;
+    const distance = Math.abs(height - targetDeckY);
+    if (distance < bestDistance) {
+      matched = height;
+      bestDistance = distance;
+    }
+  }
+  return bestDistance <= tolerance ? matched : null;
 }
 
 /**
@@ -260,19 +298,19 @@ export function setManualPointActions(point, actions) {
  * @returns {boolean}
  */
 export function coerceStrictArrival(value, def = false) {
-  if (typeof value === 'boolean') return value;
-  if (typeof value === 'number') {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") {
     if (Number.isInteger(value)) {
       if (value === 0 || value === 1) return Boolean(value);
       return def;
     }
     return def;
   }
-  if (typeof value !== 'string') return def;
+  if (typeof value !== "string") return def;
 
   const text = value.trim().toLowerCase();
-  if (['true', '1', 'yes', 'y', 'on'].includes(text)) return true;
-  if (['false', '0', 'no', 'n', 'off'].includes(text)) return false;
+  if (["true", "1", "yes", "y", "on"].includes(text)) return true;
+  if (["false", "0", "no", "n", "off"].includes(text)) return false;
   return def;
 }
 
@@ -282,7 +320,89 @@ export function coerceStrictArrival(value, def = false) {
  */
 export function exportActionToken(value) {
   const token = ACTION_TOKENS[coerceActionType(value)];
-  return token === undefined ? 'RUN' : token;
+  return token === undefined ? "RUN" : token;
+}
+
+/**
+ * `find_text` accepts one string or a list of non-empty strings; anything else
+ * counts as not written. Mirrors `model.coerce_find_text`.
+ * @param {unknown} value
+ * @returns {string[]}
+ */
+export function coerceFindText(value) {
+  if (typeof value === "string") {
+    const text = value.trim();
+    return text ? [text] : [];
+  }
+  if (!Array.isArray(value)) return [];
+  const texts = [];
+  for (const item of value) {
+    if (typeof item !== "string") return [];
+    const text = item.trim();
+    if (!text) return [];
+    texts.push(text);
+  }
+  return texts;
+}
+
+/**
+ * The three FIND fields, omitting any that is not written. Mirrors `model.find_fields_of`.
+ * @param {PathPoint} point
+ * @returns {Object<string, string|string[]>}
+ */
+export function findFieldsOf(point) {
+  const fields = {};
+  const target = String(point.find_target === undefined ? "" : point.find_target).trim();
+  if (target) fields.find_target = target;
+  const texts = coerceFindText(point.find_text);
+  if (texts.length) fields.find_text = texts;
+  const stop = String(point.find_stop === undefined ? "" : point.find_stop).trim();
+  if (stop) fields.find_stop = stop;
+  const arrive = coerceFindArrive(point.find_arrive);
+  if (arrive.length) fields.find_arrive = arrive;
+  return fields;
+}
+
+/**
+ * `find_arrive` is an `[x, y]` of finite numbers; anything else counts as not written.
+ * Mirrors `model.coerce_find_arrive`.
+ * @param {unknown} value
+ * @returns {number[]}
+ */
+export function coerceFindArrive(value) {
+  if (!Array.isArray(value) || value.length !== 2) return [];
+  const numbers = [];
+  for (const item of value) {
+    if (typeof item !== "number" || !Number.isFinite(item)) return [];
+    numbers.push(item);
+  }
+  return numbers;
+}
+
+/**
+ * Whether two points carry the same FIND fields, so normalisation never merges
+ * two points that would lose one of them. Mirrors the Python merge guard.
+ * @param {PathPoint} a
+ * @param {PathPoint} b
+ * @returns {boolean}
+ */
+function findFieldsEqual(a, b) {
+  const fa = findFieldsOf(a);
+  const fb = findFieldsOf(b);
+  return (
+    (fa.find_target || "") === (fb.find_target || "") &&
+    (fa.find_stop || "") === (fb.find_stop || "") &&
+    arraysEqual(fa.find_text || [], fb.find_text || []) &&
+    arraysEqual(fa.find_arrive || [], fb.find_arrive || [])
+  );
+}
+
+/**
+ * @param {PathPoint} point
+ * @returns {string}
+ */
+export function triggerNodeOf(point) {
+  return typeof point.trigger_node === "string" ? point.trigger_node.trim() : "";
 }
 
 /**
@@ -316,22 +436,32 @@ export function normalizePathPoints(points) {
   /** @type {PathPoint[]} */
   const normalized = [];
   for (const point of points) {
-    const actionChain = coerceActionChain(
-      point.actions,
-      coerceActionType(point.action, ActionType.RUN),
-    );
+    const actionChain = coerceActionChain(point.actions, coerceActionType(point.action, ActionType.RUN));
     /** @type {PathPoint} */
     const np = {
       x: roundHalfEven(Number(point.x), 2),
       y: roundHalfEven(Number(point.y), 2),
       action: getDisplayAction(actionChain),
       actions: actionChain,
-      zone: normalizeZoneId(point.zone === undefined ? '' : point.zone),
+      zone: normalizeZoneId(point.zone === undefined ? "" : point.zone),
       strict: coerceStrictArrival(point.strict, false),
     };
-    const targetTier = normalizeZoneId(point.target_tier === undefined ? '' : point.target_tier);
+    const targetTier = normalizeZoneId(point.target_tier === undefined ? "" : point.target_tier);
     if (targetTier) np.target_tier = targetTier;
+    const rawTargetDeckY = point.target_deck_y;
+    if (
+      typeof rawTargetDeckY !== "boolean" &&
+      rawTargetDeckY !== null &&
+      rawTargetDeckY !== undefined &&
+      (typeof rawTargetDeckY !== "string" || rawTargetDeckY.trim())
+    ) {
+      const targetDeckY = Number(rawTargetDeckY);
+      if (Number.isFinite(targetDeckY)) np.target_deck_y = targetDeckY;
+    }
     if (Boolean(point.required)) np.required = true;
+    Object.assign(np, findFieldsOf(point));
+    const triggerNode = triggerNodeOf(point);
+    if (triggerNode) np.trigger_node = triggerNode;
     if (Boolean(point.auto_portal)) np.auto_portal = true;
     if (Boolean(point.suppress_auto_portal)) np.suppress_auto_portal = true;
     syncPortalFlags(np);
@@ -386,7 +516,10 @@ export function normalizePathPoints(points) {
       last.zone === point.zone &&
       last.strict === point.strict &&
       Boolean(last.required) === Boolean(point.required) &&
-      (last.target_tier || '') === (point.target_tier || '')
+      (last.target_tier || "") === (point.target_tier || "") &&
+      last.target_deck_y === point.target_deck_y &&
+      findFieldsEqual(last, point) &&
+      triggerNodeOf(last) === triggerNodeOf(point)
     ) {
       const mergedAutoPortal = Boolean(last.auto_portal) || Boolean(point.auto_portal);
       const mergedSuppressed = Boolean(last.suppress_auto_portal) || Boolean(point.suppress_auto_portal);

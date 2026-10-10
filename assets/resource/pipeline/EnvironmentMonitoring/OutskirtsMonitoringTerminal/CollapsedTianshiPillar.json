@@ -82,10 +82,10 @@
         "recognition": "TemplateMatch",
         "roi": "CheckCollapsedTianshiPillarText",
         "roi_offset": [
-            -18,
+            -20,
             0,
             0,
-            28
+            50
         ],
         "template": "EnvironmentMonitoring/PhotoIcon.png",
         "threshold": 0.8,
@@ -196,6 +196,17 @@
         "all_of": [
             "InCollapsedTianshiPillarMission"
         ],
+        // 面板入场动画期间点击可能被吞掉，等按钮区域静止后再继续
+        // （wait_freezes 按 ROI 整体判定静止，区域越大越容易把按钮位移稀释掉）
+        "pre_wait_freezes": {
+            "time": 200,
+            "target": [
+                904,
+                580,
+                368,
+                130
+            ]
+        },
         "pre_delay": 0,
         "post_delay": 0,
         "rate_limit": 0,
@@ -253,7 +264,7 @@
         "desc": "已进入倒塌的天师桩任务地图，准备快捷传送",
         "recognition": "And",
         "all_of": [
-            "EnvironmentMonitoringQuickTeleportSelectButton",
+            "QuickTeleportButton",
             "InCollapsedTianshiPillarMission"
         ],
         "pre_delay": 0,
@@ -267,7 +278,7 @@
         "desc": "在倒塌的天师桩任务地图中点击前往传送",
         "recognition": "And",
         "all_of": [
-            "EnvironmentMonitoringQuickTeleportSelectButton",
+            "QuickTeleportButton",
             "InCollapsedTianshiPillarMission"
         ],
         "pre_delay": 0,
@@ -283,7 +294,7 @@
         "desc": "在倒塌的天师桩任务地图中点击传送",
         "recognition": "And",
         "all_of": [
-            "WhiteConfirmButtonType1"
+            "TeleportButton"
         ],
         "pre_delay": 0,
         "action": "Click",
@@ -376,6 +387,48 @@
         "custom_action": "MapNavigateAction",
         "custom_action_param": {
             "path": [
+                {
+                    "action": "ZONE",
+                    "zone_id": "Wuling_Base"
+                },
+                {
+                    "action": "NAVMESH",
+                    "target": [
+                        644.99,
+                        2617.89
+                    ]
+                },
+                {
+                    "action": "HEADING",
+                    "angle": 290
+                }
+            ]
+        },
+        "post_delay": 0,
+        "rate_limit": 0,
+        "next": [
+            "CollapsedTianshiPillarTakePhoto"
+        ],
+        "focus": {
+            "Node.Action.Succeeded": {
+                "trace": true
+            },
+            "Node.Action.Failed": {
+                "trace": true
+            }
+        }
+    },
+    "GoToCollapsedTianshiPillarMoveAfterFight": {
+        "desc": "可能的战斗结束后，恢复性地走回倒塌的天师桩拍照点",
+        "pre_delay": 0,
+        "action": "Custom",
+        "custom_action": "MapNavigateAction",
+        "custom_action_param": {
+            "path": [
+                {
+                    "action": "ZONE",
+                    "zone_id": "Wuling_Base"
+                },
                 {
                     "action": "NAVMESH",
                     "target": [

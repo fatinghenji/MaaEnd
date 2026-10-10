@@ -10,9 +10,6 @@
  * Convention: read endpoints throw {@link RpcError} on a non-2xx response (the
  * caller surfaces `err.message` — carrying the backend's Chinese `detail` — in
  * the status line).
- * `/api/route` is the deliberate exception — it returns `{ok:false, error}` with
- * a 200 for "no path found", so {@link postRoute} resolves that object instead of
- * throwing (an unreachable goal is a normal result, not an error).
  *
  * @module rpc
  */
@@ -25,7 +22,7 @@ export class RpcError extends Error {
    */
   constructor(message, status) {
     super(message);
-    this.name = 'RpcError';
+    this.name = "RpcError";
     /** @type {number} */
     this.status = status;
   }
@@ -38,18 +35,18 @@ export class RpcError extends Error {
  * @returns {Promise<string>}
  */
 async function errorMessage(res) {
-  let bodyText = '';
+  let bodyText = "";
   try {
     bodyText = await res.text();
   } catch {
-    bodyText = '';
+    bodyText = "";
   }
   if (bodyText) {
     try {
       const parsed = JSON.parse(bodyText);
-      if (parsed && typeof parsed === 'object') {
-        if (typeof parsed.detail === 'string' && parsed.detail) return parsed.detail;
-        if (typeof parsed.error === 'string' && parsed.error) return parsed.error;
+      if (parsed && typeof parsed === "object") {
+        if (typeof parsed.detail === "string" && parsed.detail) return parsed.detail;
+        if (typeof parsed.error === "string" && parsed.error) return parsed.error;
       }
     } catch {
       // non-JSON body — use it verbatim below
@@ -67,7 +64,7 @@ async function errorMessage(res) {
 async function getJson(url) {
   let res;
   try {
-    res = await fetch(url, { headers: { Accept: 'application/json' } });
+    res = await fetch(url, {headers: {Accept: "application/json"}});
   } catch (err) {
     throw new RpcError(`网络请求失败: ${url} (${err && err.message ? err.message : err})`, 0);
   }
@@ -82,12 +79,12 @@ async function getJson(url) {
  * @param {string} [method='POST']
  * @returns {Promise<any>}
  */
-async function sendJson(url, body, method = 'POST') {
+async function sendJson(url, body, method = "POST") {
   let res;
   try {
     res = await fetch(url, {
       method,
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      headers: {"Content-Type": "application/json", Accept: "application/json"},
       body: JSON.stringify(body),
     });
   } catch (err) {
@@ -104,7 +101,7 @@ async function sendJson(url, body, method = 'POST') {
  * @returns {Promise<{zones: Array<Object>}>}
  */
 export function getZones() {
-  return getJson('/api/zones');
+  return getJson("/api/zones");
 }
 
 /**
@@ -112,7 +109,7 @@ export function getZones() {
  * @returns {Promise<{ready:boolean, loading:boolean, progress:number, error:?string, path:string}>}
  */
 export function getLoadStatus() {
-  return getJson('/api/load-status');
+  return getJson("/api/load-status");
 }
 
 /**
@@ -125,7 +122,7 @@ export function getLoadStatus() {
 export async function getMesh(zoneId) {
   let res;
   try {
-    res = await fetch(`/mesh/${encodeURIComponent(String(zoneId))}`, { cache: 'no-store' });
+    res = await fetch(`/mesh/${encodeURIComponent(String(zoneId))}`, {cache: "no-store"});
   } catch (err) {
     throw new RpcError(`网络请求失败: /mesh/${zoneId} (${err && err.message ? err.message : err})`, 0);
   }
@@ -142,7 +139,7 @@ export async function getMesh(zoneId) {
  * @returns {string}
  */
 function withCacheBust(url) {
-  return `${url}${url.includes('?') ? '&' : '?'}_=${Date.now()}`;
+  return `${url}${url.includes("?") ? "&" : "?"}_=${Date.now()}`;
 }
 
 /**
@@ -153,15 +150,15 @@ function withCacheBust(url) {
  */
 export function basemapUrl(imagePath) {
   const parts = String(imagePath)
-    .split('/')
+    .split("/")
     .map((seg) => encodeURIComponent(seg));
-  return withCacheBust(`/basemap/${parts.join('/')}`);
+  return withCacheBust(`/basemap/${parts.join("/")}`);
 }
 
 /**
  * Same-origin URL that resolves an arbitrary zone STRING to its basemap PNG (backend
  * runs `resolve_zone_image`, the tk `_get_map_pil` path — fs existence checks + dir
- * scan). Used for edit-mode / assert-mode / A*-mode basemaps whose zone is a route
+ * scan). Used for edit-mode / assert-mode / log-mode basemaps whose zone is a route
  * point / assert / tier string, not a `/api/zones` field zone. 404 when unresolved.
  * @param {string} zoneId any zone identifier string
  * @returns {string}
@@ -176,39 +173,41 @@ export function basemapByZoneUrl(zoneId) {
  * @returns {Promise<{zone_ids: string[]}>}
  */
 export function getZoneIds() {
-  return getJson('/api/zone-ids');
+  return getJson("/api/zone-ids");
+}
+
+/** World-coordinate calibration used only to display ZIP-local Ziplines.json marks. */
+export function getZiplineFrames() {
+  return getJson("/api/zipline-frames");
+}
+
+/** Current installation's read-only debug/record/Ziplines.json snapshot. */
+export function getZiplineRecords() {
+  return getJson("/api/zipline-records");
 }
 
 /**
- * Request an A* preview route. Resolves the backend payload verbatim, including the
- * `{ok:false, error}` "unreachable" case (see module note).
+ * Expand a complete MapNavigator request with the runtime planner, preserving global
+ * route boundaries and zipline semantics.
  *
- * `blind_start` / `blind_target` describe the straight lines the runtime walks with no
- * navmesh under it (they are the actual ladder result, not an estimate). Their `reason` is
- * `'off_mesh'` when the endpoint lies outside the mesh, `'disconnected'` when it stands on
- * mesh the other end simply cannot be reached from — do not report the second as the first.
- *
- * `off_mesh` rides along on the `ok:false` case so a failure can say *why* — an endpoint
- * outside the mesh reads very differently from two endpoints on disconnected pieces.
- *
- * `goal_deck_y` 是终点所在那张可走面的高度:`floor_y` 管吸附,它管在重叠面里选哪一张。
- * 不给时寻路取整格全部面、先够到哪张停哪张(也就是加这个字段之前的行为)。
- *
- * @param {{zone_id:number, start:number[], goal:number[], snap_radius?:number, floor_y?:?number,
- *   goal_deck_y?:?number}} req
- * @returns {Promise<{ok:boolean, points?:number[][], segment_breaks?:number[], cost?:number,
- *   blind_start?:?{entry:number[], distance:number, reason:string},
- *   blind_target?:?{reached:number[], gap:number, reason:string},
- *   off_mesh?:{start:?OffMeshProbe, goal:?OffMeshProbe}, error?:string}>}
+ * @param {{position:number[], position_zone:string, floor_y?:?number, custom_action_param:Object,
+ *   zipline_account_id?:string}} req
+ * @returns {Promise<{ok:boolean, stale?:boolean, points?:number[][],
+ *   walk_segments?:number[][][], zipline_segments?:Array<Object>,
+ *   diagnostics?:Array<Object>, expanded_waypoints?:number, zipline?:Object, error?:string,
+ *   failure?:{code:string, message:string, authored_index?:number, zone_id?:string,
+ *     segment_start?:number[], segment_goal?:number[], gap_start?:number[], gap_goal?:number[], gap_distance?:number,
+ *     target?:number[],
+ *     target_tier?:string, target_deck_y?:number,
+ *     route_status?:string, route_error?:string}}>}
  */
-export function postRoute(req) {
-  return sendJson('/api/route', {
-    zone_id: req.zone_id,
-    start: req.start,
-    goal: req.goal,
-    snap_radius: req.snap_radius === undefined ? 5.0 : req.snap_radius,
+export function postRoutePreview(req) {
+  return sendJson("/api/route-preview", {
+    position: req.position,
+    position_zone: req.position_zone,
     floor_y: req.floor_y === undefined ? null : req.floor_y,
-    goal_deck_y: req.goal_deck_y === undefined ? null : req.goal_deck_y,
+    custom_action_param: req.custom_action_param,
+    zipline_account_id: req.zipline_account_id || "",
   });
 }
 
@@ -216,8 +215,8 @@ export function postRoute(req) {
  * @typedef {{distance:?number, nearest:?number[], budget:?number}} OffMeshProbe a point off the
  *   walkable mesh: how far the nearest mesh point is and where it lies (both null when there is
  *   no mesh at all within the runtime's blind-walk budget). `budget` is how far the runtime will
- *   blind-walk at that endpoint's role, so only {@link postRoute} fills it in — a bare point does
- *   not say whether it is a start or a goal, and the batch probe below leaves it null.
+ *   blind-walk at that endpoint's role. A bare point does not say whether it is a
+ *   start or a goal, so the batch probe below leaves it null.
  */
 
 /**
@@ -225,14 +224,14 @@ export function postRoute(req) {
  * `null` meaning "on the mesh" (the runtime snaps it silently — nothing to report).
  *
  * Geometry only. How far the runtime actually blind-walks to a *goal* depends on the start
- * (it probes back along the goal→start line), so that number comes from {@link postRoute}
- * alone — never present a `distance` from here as the blind walk.
+ * (it probes back along the goal→start line), so never present a `distance` from here
+ * as the runtime blind walk.
  *
  * @param {{zone_id:number, points:number[][], snap_radius?:number, floor_y?:?number}} req
  * @returns {Promise<{ok:boolean, results?:Array<?OffMeshProbe>, error?:string}>}
  */
 export function postOffMeshProbe(req) {
-  return sendJson('/api/offmesh-probe', {
+  return sendJson("/api/offmesh-probe", {
     zone_id: req.zone_id,
     points: req.points,
     snap_radius: req.snap_radius === undefined ? 5.0 : req.snap_radius,
@@ -253,7 +252,7 @@ export function postOffMeshProbe(req) {
  * @returns {Promise<{ok:boolean, decks?:Deck[], error?:string}>}
  */
 export function postDeckProbe(req) {
-  return sendJson('/api/deck-probe', { zone_id: req.zone_id, point: req.point });
+  return sendJson("/api/deck-probe", {zone_id: req.zone_id, point: req.point});
 }
 
 /**
@@ -263,35 +262,59 @@ export function postDeckProbe(req) {
  * @returns {Promise<{ok: boolean, x: number, y: number, zone: string, rot: ?number}>}
  */
 export function locateOnce(connection) {
-  return sendJson('/api/locate-once', { connection });
+  return sendJson("/api/locate-once", {connection});
 }
 
-// --- import / export (backend keeps json_import.py / maptracker_compat.py) ------------
+// --- import / export (backend keeps json_import.py) -----------------------------------
+
+/**
+ * Importable MapNavigateAction / MapLocateAssertLocation nodes under project assets.
+ * @returns {Promise<{nodes:Array<Object>}>}
+ */
+export function getProjectNodes() {
+  return getJson("/api/project-nodes");
+}
+
+/**
+ * Load one previously discovered project node. The backend revalidates that
+ * `resourcePath` still resolves inside project assets before reading it.
+ * @param {'path'|'assert'} kind import node kind
+ * @param {string} resourcePath project-relative assets path
+ * @param {string} nodeName top-level Pipeline node name
+ * @returns {Promise<Object>}
+ */
+export function loadProjectNode(kind, resourcePath, nodeName) {
+  return sendJson("/api/project-nodes/load", {
+    kind,
+    resource_path: resourcePath,
+    node_name: nodeName,
+  });
+}
 
 /**
  * Analyze an uploaded JSON (phase 1 of import, mirrors the head of tk `import_json`).
  * The backend tries a route import first, falling back to an AssertLocation import.
  * Discriminated by `kind`:
- *   - `{ok:true, kind:'path', needs_assignment:false, points, route_count, converted_count}`
- *   - `{ok:true, kind:'path', needs_assignment:true, raw_points, segments, zone_options, route_count, converted_count}`
- *   - `{ok:true, kind:'assert', zone_id, target, condition_count, converted_from_maptracker}`
+ *   - `{ok:true, kind:'path', needs_assignment:false, points, route_count}`
+ *   - `{ok:true, kind:'path', needs_assignment:true, raw_points, segments, zone_options, route_count}`
+ *   - `{ok:true, kind:'assert', zone_id, target, condition_count}`
  *   - `{ok:false, error}` (verbatim Chinese message)
  * @param {string} text raw file contents
  * @returns {Promise<Object>}
  */
 export function importAnalyze(text) {
-  return sendJson('/api/import/analyze', { text });
+  return sendJson("/api/import/analyze", {text});
 }
 
 /**
  * Finalize a route import after the user assigns a zone per segment (phase 2, mirrors
- * tk `confirm()` + the post-dialog convert/infer/normalize tail).
+ * tk `confirm()` + the post-dialog normalize tail).
  * @param {Array<Object>} rawPoints the `raw_points` from {@link importAnalyze}
  * @param {Array<{start:number, end:number, zone:string}>} zoneAssignments per-segment zone
- * @returns {Promise<{ok:boolean, points?:Array<Object>, converted_count?:number, error?:string}>}
+ * @returns {Promise<{ok:boolean, points?:Array<Object>, error?:string}>}
  */
 export function importFinalize(rawPoints, zoneAssignments) {
-  return sendJson('/api/import/finalize', { raw_points: rawPoints, zone_assignments: zoneAssignments });
+  return sendJson("/api/import/finalize", {raw_points: rawPoints, zone_assignments: zoneAssignments});
 }
 
 /**
@@ -301,7 +324,7 @@ export function importFinalize(rawPoints, zoneAssignments) {
  * @returns {Promise<{nodes:Array<any>, text:string}>}
  */
 export function exportPath(points) {
-  return sendJson('/api/export/path', { points });
+  return sendJson("/api/export/path", {points});
 }
 
 /**
@@ -311,7 +334,7 @@ export function exportPath(points) {
  * @returns {Promise<{node:Object, text:string}>}
  */
 export function exportAssert(zoneId, target) {
-  return sendJson('/api/export/assert', { zone_id: zoneId, target });
+  return sendJson("/api/export/assert", {zone_id: zoneId, target});
 }
 
 // --- settings + adb ------------------------------------------------------------------
@@ -322,12 +345,12 @@ export function exportAssert(zoneId, target) {
  * @returns {Promise<{platform:string, supported_kinds:string[], default_kind:string}>}
  */
 export function getPlatform() {
-  return getJson('/api/platform');
+  return getJson("/api/platform");
 }
 
 /** @returns {Promise<Object>} persisted settings */
 export function getSettings() {
-  return getJson('/api/settings');
+  return getJson("/api/settings");
 }
 
 /**
@@ -335,7 +358,24 @@ export function getSettings() {
  * @returns {Promise<Object>} the saved settings
  */
 export function putSettings(payload) {
-  return sendJson('/api/settings', payload, 'PUT');
+  return sendJson("/api/settings", payload, "PUT");
+}
+
+/**
+ * @returns {Promise<Object>} the virtual no-go table the planner reads from data/MapNavigator
+ */
+export function fetchNoGoZones() {
+  return getJson("/api/nogo");
+}
+
+/**
+ * Persist the no-go table. The backend then cold-starts the navmesh session so the
+ * next route preview plans against the saved polygons; `reloaded` says whether it did.
+ * @param {Object} payload serialized no-go doc
+ * @returns {Promise<{ok:boolean, path:string, zones:number, reloaded:boolean, error:string}>}
+ */
+export function saveNoGoZones(payload) {
+  return sendJson("/api/nogo", payload, "PUT");
 }
 
 /**
@@ -344,7 +384,7 @@ export function putSettings(payload) {
  * @returns {Promise<{connected:boolean, message:string}>}
  */
 export function checkConnection(payload) {
-  return sendJson('/api/connection/check', payload);
+  return sendJson("/api/connection/check", payload);
 }
 
 /**
@@ -353,8 +393,8 @@ export function checkConnection(payload) {
  * @param {string} [adbPath] override adb binary path
  * @returns {Promise<{devices:Array<Object>, error?:string}>}
  */
-export function getAdbDevices(adbPath = '') {
-  const q = adbPath ? `?adb_path=${encodeURIComponent(adbPath)}` : '';
+export function getAdbDevices(adbPath = "") {
+  const q = adbPath ? `?adb_path=${encodeURIComponent(adbPath)}` : "";
   return getJson(`/api/adb/devices${q}`);
 }
 
@@ -363,7 +403,7 @@ export function getAdbDevices(adbPath = '') {
  * @returns {Promise<{instances:Array<{display_no:number, pw_node_id:number, eis_socket_path:string}>}>}
  */
 export function getGamescopeInstances() {
-  return getJson('/api/gamescope/instances');
+  return getJson("/api/gamescope/instances");
 }
 
 // --- game sessions (WebSocket) -------------------------------------------------------
@@ -391,14 +431,14 @@ class SessionSocket {
 
   /** @param {Object} firstPayload sent as soon as the socket opens @returns {void} */
   _open(firstPayload) {
-    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
     const ws = new WebSocket(`${proto}//${location.host}${this._path}`);
     this._ws = ws;
-    ws.addEventListener('open', () => {
+    ws.addEventListener("open", () => {
       this._send(firstPayload);
       this.onOpen();
     });
-    ws.addEventListener('message', (ev) => {
+    ws.addEventListener("message", (ev) => {
       let msg;
       try {
         msg = JSON.parse(ev.data);
@@ -407,8 +447,8 @@ class SessionSocket {
       }
       this.onMessage(msg);
     });
-    ws.addEventListener('close', (ev) => this.onClose(ev));
-    ws.addEventListener('error', (ev) => this.onError(ev));
+    ws.addEventListener("close", (ev) => this.onClose(ev));
+    ws.addEventListener("error", (ev) => this.onError(ev));
   }
 
   /** @param {Object} payload @returns {void} */
@@ -441,20 +481,26 @@ class SessionSocket {
  */
 export class RecordingSocket extends SessionSocket {
   constructor() {
-    super('/ws/record');
+    super("/ws/record");
   }
 
   /**
    * @param {Object} sessionConfig `{kind:'win32'|'adb', win32?, adb?}`
+   * @param {{liveOnly?: boolean}} [options] `liveOnly` avoids registering recording hotkeys
    * @returns {void}
    */
-  start(sessionConfig) {
-    this._open(sessionConfig || {});
+  start(sessionConfig, options = {}) {
+    this._open({...(sessionConfig || {}), live_only: !!options.liveOnly});
   }
 
   /** Ask the backend to stop recording. @returns {void} */
   stop() {
-    this._send({ type: 'stop' });
+    // A stop asked before the socket opens is dropped by `_send`; closing is what cancels the startup.
+    if (this._ws && this._ws.readyState === WebSocket.CONNECTING) {
+      this.close();
+      return;
+    }
+    this._send({type: "stop"});
   }
 }
 
@@ -465,51 +511,56 @@ export class RecordingSocket extends SessionSocket {
  */
 export class NavTestSocket extends SessionSocket {
   constructor() {
-    super('/ws/navtest');
+    super("/ws/navtest");
   }
 
   /**
    * Open the session and walk `route` as soon as the game is connected.
    * @param {Object} sessionConfig `{kind:'win32'|'adb'|..., win32?, adb?}`
-   * @param {{path: Array, exported: boolean, assert_target: ?Object}} route see {@link NavTestSocket#arm}
+   * @param {{path: Array, exported: boolean, zip?: boolean, zipline_account_id?: string, heading_source?: string, assert_target: ?Object}} route see {@link NavTestSocket#arm}
    * @returns {void}
    */
   start(sessionConfig, route) {
-    this._open({ start: sessionConfig || {}, ...this._route(route) });
+    this._open({start: sessionConfig || {}, ...this._route(route)});
   }
 
   /**
    * Load what F3 (and the next `run`) will run. `exported` false means editor waypoints
    * the backend still has to export, true means ready pipeline nodes. `assert_target`
    * `{zone_id, target:[x,y,w,h]}` runs the assert rect instead and wins over `path`.
-   * @param {{path: Array, exported: boolean, assert_target: ?Object}} route
+   * `zipline_account_id` travels with `zip` so the runtime can match account-scoped
+   * zipline records; without it the whole route degrades to walking.
+   * @param {{path: Array, exported: boolean, zip?: boolean, zipline_account_id?: string, heading_source?: string, assert_target: ?Object}} route
    * @returns {void}
    */
   arm(route) {
-    this._send({ type: 'arm', ...this._route(route) });
+    this._send({type: "arm", ...this._route(route)});
   }
 
   /** Re-arm with `route` and run it once. @returns {void} */
   run(route) {
-    this._send({ type: 'run', ...this._route(route) });
+    this._send({type: "run", ...this._route(route)});
   }
 
-  /** @returns {{path: Array, exported: boolean, assert_target: ?Object}} */
+  /** @returns {{path: Array, exported: boolean, zip: boolean, zipline_account_id: string, heading_source: string, assert_target: ?Object}} */
   _route(route) {
     return {
       path: (route && route.path) || [],
       exported: !!(route && route.exported),
+      zip: !!(route && route.zip),
+      zipline_account_id: (route && route.zipline_account_id) || "",
+      heading_source: (route && route.heading_source) || "character",
       assert_target: (route && route.assert_target) || null,
     };
   }
 
   /** Stop the run in flight (same effect as F4). @returns {void} */
   abort() {
-    this._send({ type: 'abort' });
+    this._send({type: "abort"});
   }
 
   /** End the session; the backend tears down the agent. @returns {void} */
   stop() {
-    this._send({ type: 'stop' });
+    this._send({type: "stop"});
   }
 }

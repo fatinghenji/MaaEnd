@@ -3,6 +3,7 @@
 #include <meojson/json.hpp>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include <MaaUtils/NoWarningCV.hpp>
 
@@ -16,32 +17,56 @@ struct MapPosition
     double y = 0.0;
     double score = 0.0;
     int sliceIndex = 0;
-    double angle = 0.0;
+    double angle = 0.0; // 当前帧角色朝向，负值表示未识别到；定位成功不保证朝向可用。
     long long latencyMs = 0;
-    bool isHeld = false;
 };
 
 struct MapLocatorConfig
 {
     std::string mapResourceDir;
     std::string yoloModelPath;
+    // 摄像机朝向两图工件：前处理图 + 参考配对分类器；路径为空表示未部署该图。
+    std::string cameraOrientationPreprocessModelPath;
+    std::string cameraOrientationRefModelPath;
     int yoloThreads = 1;
+};
+
+// 调用方对「人大概在哪」的先验，例如滑索落点、传送落点。只在全局搜索时多开一个以它为中心的
+// 小窗参与比分，位置仍由匹配分数决定；坐标是 zone_id 那张图自己的像素。
+struct SearchHint
+{
+    std::string zone_id;
+    double x = 0.0;
+    double y = 0.0;
+    double radius = 0.0;
+
+    MEO_JSONIZATION(zone_id, x, y, radius)
 };
 
 struct LocateOptions
 {
-    double loc_threshold = 0.55;      // 最低分数线
+    double loc_threshold = 0.55;      // 低于此分先跑第二策略和提示窗, 仍无更高峰则照样交付
     double yolo_threshold = 0.70;
     bool force_global_search = false; // 是否强制放弃当前追踪，进行全局全图搜
     int max_lost_frames = 3;          // 允许丢失追踪的帧数
     std::string expected_zone_id;     // 非空时仅接受该区域的定位结果
+    std::vector<SearchHint> search_hints;
+    // 镜头方位角先验（北为 0 度）；只在预期方向存在真实双峰候选时消歧。
+    // 仅供 C++ 调用方控制，不暴露为 Recognition 参数：它必须是一次观测，取值只能是「上一次成功识别到的
+    // 镜头方位角」。由 MapNavigator 在镜头朝向导航、Navigate 相位、且自那次观测以来没有任何转向指令时
+    // 填入（见 NavigationStateMachine::CaptureCurrentPosition 的朝向纪元判据），不能用目标角度或未落地的
+    // 转向量推算——那是指令，不是观测。
+    std::optional<double> camera_heading_prior;
+    // 仅供 C++ 调用方控制；镜头朝向导航可关闭，不暴露为 Recognition 参数。
+    bool reject_occluded_frames = true;
 
     MEO_JSONIZATION(
         MEO_OPT loc_threshold,
         MEO_OPT yolo_threshold,
         MEO_OPT force_global_search,
         MEO_OPT max_lost_frames,
-        MEO_OPT expected_zone_id)
+        MEO_OPT expected_zone_id,
+        MEO_OPT search_hints)
 };
 
 // --- 返回结果枚举与封装 ---
@@ -55,11 +80,21 @@ enum class LocateStatus
     NotInitialized
 };
 
+// 摄像机朝向识别结果：rot ∈ [0,360)，confidence ∈ [0,1]。与角色箭头朝向
+// （MapPosition.angle）识别目标无关，独立输出，不参与定位内部逻辑。
+struct CameraOrientation
+{
+    double rot = 0.0;
+    double confidence = 0.0;
+};
+
 struct LocateResult
 {
     LocateStatus status;
     std::optional<MapPosition> position;
-    std::string debugMessage; // 用于向 Pipeline 输出日志
+    std::string debugMessage;  // 用于向 Pipeline 输出日志
+    std::optional<CameraOrientation> camRot;
+    std::optional<double> rot; // 当前帧角色朝向，不依赖位置是否识别成功。
 };
 
 enum class GlobalSearchMode
@@ -146,7 +181,6 @@ inline bool TryExtractMinimap(const cv::Mat& image, bool use_adb_minimap_roi, cv
 }
 
 constexpr int MaxLostTrackingCount = 3;
-constexpr double MinMatchScore = 0.7;
 constexpr double MobileSearchRadius = 50.0;
 
 // global 跨帧跳变保护 + 冷启动 burn-in
@@ -185,8 +219,7 @@ constexpr int kArbiterReclaimStreak = 5;
 constexpr double kArbiterReclaimDriftDistance = 6.0;
 
 // 小地图与底图的像素尺度比，是底图导出时定死的资产属性。tier 图按游戏原生尺度导出，
-// base 图里只有 ValleyIV 被放大过 16/15。量法：拿 tier 图去 parent base 上匹配求峰，
-// 或读 maptracker_coordinate_transforms.json 里该 zone 的 scale_x 乘 65/64。
+// base 图里只有 ValleyIV 被放大过 16/15。量法：拿 tier 图去 parent base 上匹配求峰。
 inline double ZoneTemplateScale(const std::string& zoneId)
 {
     return zoneId == "ValleyIV_Base" ? 15.0 / 16.0 : 1.0;
@@ -215,7 +248,7 @@ struct TrackingConfig
 struct MatchConfig
 {
     int fineSearchRadius = 40;   // 精搜半径(px)
-    double passThreshold = 0.55; // 全局搜索及格线, 容忍UI遮挡+光影
+    double passThreshold = 0.55; // 低于此分先跑第二策略和提示窗, 仍无更高峰则照样交付
     double yoloConfThreshold = 0.60;
 };
 

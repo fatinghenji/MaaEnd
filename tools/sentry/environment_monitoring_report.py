@@ -1,9 +1,9 @@
 """根据 Sentry spans 生成环境监测任务失败情况报告。
 
-执行次数按包含 ``GoTo*Move`` span 的唯一 trace 统计。传送失败取自路线专属的
-``QuickTeleport`` span，移动失败取自失败的移动 span；扫描失败归属于同一 trace
-中时间最近的前置 ``GoTo*Move`` span。同一观察点、同一 trace 中的同类重复 span
-只计数一次，总失败按三类失败 trace 的并集统计。
+默认分析 Sentry 最新发布的 MaaEnd release。执行次数按包含 ``GoTo*Move`` span 的
+唯一 trace 统计。传送失败取自路线专属的 ``QuickTeleport`` span，移动失败取自失败的
+移动 span；扫描失败归属于同一 trace 中时间最近的前置 ``GoTo*Move`` span。同一
+观察点、同一 trace 中的同类重复 span 只计数一次，总失败按三类失败 trace 的并集统计。
 """
 
 from __future__ import annotations
@@ -25,6 +25,8 @@ try:
         DEFAULT_SENTRY_TIMEOUT_SECONDS,
         explore,
         format_rate,
+        normalize_sentry_environment,
+        resolve_latest_maaend_release,
         resolve_sentry_command,
         show_progress,
         write_console_table,
@@ -34,6 +36,8 @@ except ImportError:
         DEFAULT_SENTRY_TIMEOUT_SECONDS,
         explore,
         format_rate,
+        normalize_sentry_environment,
+        resolve_latest_maaend_release,
         resolve_sentry_command,
         show_progress,
         write_console_table,
@@ -273,7 +277,7 @@ def collect_report(
     *,
     sentry_command: str,
     release: str | None,
-    environment: str,
+    environment: str | None,
     target: str,
     period: str,
     routes_path: Path,
@@ -282,11 +286,31 @@ def collect_report(
     verbose: bool,
     quiet: bool,
 ) -> tuple[list[ReportRow], int]:
-    if release:
-        escaped_release = release.replace('"', '\\"')
-        scope_filter = f'release:"{escaped_release}"'
-    else:
-        scope_filter = f"environment:{environment}"
+    if environment is not None:
+        environment = normalize_sentry_environment(environment)
+    if release is None:
+        release_description = (
+            f"{environment} 环境的最新 MaaEnd release"
+            if environment is not None
+            else "最新发布的 MaaEnd release"
+        )
+        show_progress(
+            f"[0/5] 自动选择 {release_description}",
+            quiet=quiet,
+        )
+        release = resolve_latest_maaend_release(
+            sentry_command,
+            target=target,
+            environment=environment,
+            verbose=verbose,
+            timeout_seconds=timeout_seconds,
+        )
+        show_progress(f"使用 Sentry release：{release}", quiet=quiet)
+    escaped_release = release.replace('"', '\\"')
+    scope_filter = f'release:"{escaped_release}"'
+    if environment is not None:
+        escaped_environment = environment.replace('"', '\\"')
+        scope_filter = f'{scope_filter} environment:"{escaped_environment}"'
 
     move_filter = f"{scope_filter} span.description:GoTo*Move"
     teleport_failure_filter = (
@@ -469,16 +493,19 @@ def write_json(rows: Sequence[ReportRow], output: TextIO) -> None:
     output.write("\n")
 
 
-def create_argument_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
+def create_argument_parser(prog: str | None = None) -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog=prog, description=__doc__)
     parser.add_argument(
         "--release",
-        help="精确的 Sentry release 名称；指定后覆盖默认 channel 筛选",
+        help=(
+            "精确的 Sentry release 名称；未指定时选择最新发布版本，"
+            "找不到发布记录时从用户样本回退"
+        ),
     )
     parser.add_argument(
         "--environment",
-        default="beta",
-        help="未指定 --release 时使用的 Sentry environment（默认：beta）",
+        choices=("stable", "beta"),
+        help="可选的 environment 过滤；stable 选择正式版，beta 选择 Beta / RC",
     )
     parser.add_argument("--target", default="maaend/rust", help="<org>/<project>")
     parser.add_argument(
@@ -515,12 +542,12 @@ def create_argument_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
 
-    arguments = create_argument_parser().parse_args(argv)
+    arguments = create_argument_parser(prog).parse_args(argv)
     if arguments.trace_batch_size < 1:
         raise ValueError("--trace-batch-size 必须大于 0。")
     if not math.isfinite(arguments.timeout) or arguments.timeout <= 0:

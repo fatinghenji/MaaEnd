@@ -38,9 +38,13 @@ No required parameters. Optional parameters (`custom_recognition_param`):
 | `message` | Failure reason or debug information |
 | `mapName` | (On success) The localized zone name, e.g., `map01_lv001` |
 | `x` / `y` | (On success) Global pixel coordinates |
-| `rot` | (On success) Orientation yaw angle, 0°–360°, north as zero |
+| `rot` | Character orientation recognized in the current frame, in `[0°, 360°)`, north as zero; omitted when unavailable and may be present even when localization fails |
+| `camRot` | Camera orientation, 0°–360°, north as zero; carried only by frames with a successful localization (see [How Localization Works](#how-localization-works)). Unrelated to `rot` (the character orientation) |
+| `camRotConf` | Confidence of the camera orientation; present or omitted together with `camRot` |
 | `locConf` | Confidence score of this hit, for reference when tuning parameters |
 | `latencyMs` | Time consumed by this calculation (milliseconds) |
+
+Successful localization does not guarantee an available orientation. Callers must check that the orientation fields they need are present.
 
 `status` values:
 
@@ -89,7 +93,7 @@ Overriding parameters (e.g., forcing a global search after a long-distance telep
 
 Checks whether the character is currently inside a specified rectangle within a given `zone_id`.
 
-Unlike the single-frame check of `MapLocateRecognition`, this node performs a **settled determination**: it resets the tracking state, forces a global search, then polls at 250ms intervals (up to 60 frames, about 15 seconds). It requires 3 consecutive frames with successful localization, a matching zone, and positions stable within a 12px radius, and finally checks the centroid coordinate against the rectangle. A call may therefore block for several seconds — it is not instantaneous.
+This node performs a **waiting determination**: it resets the tracking state, forces a global search, then polls at 250ms intervals (up to 60 frames, about 15 seconds) until a frame localizes successfully with coordinates falling inside the rectangle. The zone banner shown after a teleport covers the minimap, and this budget exists to wait it out. A call may therefore block for several seconds — it is not instantaneous.
 
 ### Node Parameters
 
@@ -100,14 +104,7 @@ Required parameters (`custom_recognition_param`):
 | `zone_id` | Target zone name; must exactly match the localized zone name |
 | `target` | Array of 4 numbers `[x, y, w, h]`: rectangle top-left corner and size |
 
-Optional parameters (`custom_recognition_param`):
-
-| Parameter | Default | Description |
-| ---------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `loc_threshold` | `0.70` | Lower bound of the template matching score, same meaning as above; note the default is higher than for single-frame localization |
-| `yolo_threshold` | `0.70` | Same meaning as above |
-
-The assertion always forces a global search and only accepts localization results inside `zone_id`; no search-scope configuration is needed.
+There are no optional parameters. The assertion always forces a global search and only accepts localization results inside `zone_id`; the match score and YOLO confidence use the locator defaults, matching how `MapNavigator` captures positions.
 
 ### Return Value (out_detail)
 
@@ -118,8 +115,10 @@ The assertion always forces a global search and only accepts localization result
 | `inTarget` | Equivalent to `matched` |
 | `message` | Localization log or failure reason |
 | `zoneId` | The target zone name required by this assertion |
-| `x` / `y` | (On success) Centroid coordinates of the stable window |
-| `rot` | (On success) Orientation yaw angle |
+| `x` / `y` | (On success) Global pixel coordinates returned by the locator |
+| `rot` | Character orientation, with the same semantics as `MapLocateRecognition` |
+| `camRot` | Camera orientation, same value and source as `camRot` in `MapLocateRecognition` |
+| `camRotConf` | Confidence of the camera orientation; present or omitted together with `camRot` |
 | `locConf` | Confidence score of this hit |
 | `latencyMs` | Time consumed by this calculation (milliseconds) |
 | `target` | Echoes the `[x, y, w, h]` rectangle used for this assertion |
@@ -159,6 +158,11 @@ This section is for readers who want to understand the internals; it is not requ
 2. **YOLO pre-filtering**: judges by confidence whether a valid minimap area exists in the current frame, filtering out abnormal frames such as full-screen menus and effect occlusion.
 3. **Gradient-domain ZNCC matching**: gradient features are extracted for semi-transparent UI stacking scenarios, paired with ZNCC (Zero-mean Normalized Cross-Correlation) template matching. Matching relies mainly on edge and contour features, staying stable when skill effects flash or the UI changes.
 4. **MotionTracker motion prediction**: infers the search range for the current frame from historical movement speed instead of searching globally every frame, which improves speed and avoids matching distant areas that look similar but are not actually reachable.
+5. **Camera-orientation artifact**: `camRot` / `camRotConf` are produced by the two-graph artifact delivered together under `assets/resource/model/map/cameraorientation/`. `preprocess.onnx` is the single implementation of preprocessing: it takes the 118×120 observation ROI (BGR), the zone map asset (BGRA, dynamic size) and the localized `(x, y, scale)`, and outputs the observation strip and the reference strip; polar geometry, reference sampling and strip-domain composition, and the sampling and rounding conventions are all encapsulated in the graph, with the reference BGR composited over a white backdrop at transparent asset pixels and out-of-bounds reads returning 0, while the reference alpha keeps the raw asset values. `polar_with_ref.onnx` consumes the 7-channel `[obs.BGR, ref.BGR, ref.A]` reference pair and outputs a 360-bin azimuth probability distribution. A missing reference (cropped out of bounds or transparent, `ref.A` == 0) is expressed explicitly inside the pair and handled by the model, so MapLocator neither routes nor falls back: when the zone asset is missing or not BGRA it feeds a fully transparent placeholder asset, making the reference strip entirely missing, and the gap fraction only goes to the diagnostic log. The reference pair needs the localization result `(x, y, zone)`, so only frames with a successful localization and a zone other than `None` carry `camRot`; a model that is not loaded or fails inference yields none.
+
+Camera-orientation decoding takes the highest peak by default and computes a probability-weighted circular mean within 5 bins of the peak centre. The locator may also be handed a camera-heading prior (`camera_heading_prior`, north at `0°`): disambiguation is enabled only when an independent secondary peak exists (peak-top height at least `max(0.005, primary peak height × 0.05)`), and if no qualifying peak lies within 5 bins of the prior direction the prior is ignored rather than falling back to the nearest distant peak. Both height gates exist only to keep noise out of the candidates; they do not demand a tall secondary peak — in a correct recognition every non-primary bin reads below `0.001`, while a genuine double peak can have an extreme height gap. With typical primary peak heights of `[0.1, 0.2)` the 5% relative gate lands at `0.005`–`0.01`: a second mode below 5% of the primary (e.g. `0.006` under a `0.15` primary) does not qualify, and the prior stays unused on such frames. The gates test peak tops, so the signal at the prior angle itself may sit below `0.005`. A candidate peak must be a local maximum separated from the primary's refinement window, so a shoulder of the same peak is not counted as a second one; the spacing between peaks is not guaranteed, so no antipodal precondition is imposed. Once disambiguation fires, decoding takes the qualifying peak nearest to the prior direction inside that window, and confidence becomes the normalized resultant magnitude inside the selected peak's window, so the other peak cannot cancel it and make the execution side reject the direction.
+
+The camera-heading prior is a navigator-internal input and is not exposed to the Pipeline: passing it to `MapLocateRecognition` has no effect. It must be an **observation** rather than a command; when it may be passed is documented in [MapNavigator](map-navigator.md).
 
 > [!IMPORTANT]
 >

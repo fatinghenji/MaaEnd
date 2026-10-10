@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/MaaXYZ/MaaEnd/agent/go-service/pkg/i18n"
 	"github.com/MaaXYZ/MaaEnd/agent/go-service/pkg/resource"
 )
 
@@ -24,11 +25,18 @@ type area struct {
 type destination struct {
 	ID               string
 	Kind             string
+	Map              string
 	AreaID           string
 	DepotID          string
 	RouteNode        string
 	ZipRouteNode     string
 	RetryRouteNode   string
+	WalkOnly         bool
+	ZiplineOnly      bool
+	VerifyName       bool
+	SerialID         int
+	Names            map[string]string
+	AreaNames        map[string]string
 	DestinationTexts []string
 	ObjectiveTexts   []string
 }
@@ -39,30 +47,40 @@ type generatedCatalog struct {
 }
 
 type generatedDepot struct {
-	ID             string `json:"id"`
-	Map            string `json:"map"`
-	RouteNode      string `json:"route_node"`
-	ZipRouteNode   string `json:"zip_route_node"`
-	RetryRouteNode string `json:"retry_route_node"`
+	ID             string            `json:"id"`
+	Name           map[string]string `json:"name"`
+	Map            string            `json:"map"`
+	RouteNode      string            `json:"route_node"`
+	ZipRouteNode   string            `json:"zip_route_node"`
+	WalkOnly       bool              `json:"walk_only"`
+	ZiplineOnly    bool              `json:"zipline_only"`
+	RetryRouteNode string            `json:"retry_route_node"`
 }
 
 type generatedDestination struct {
 	ID             string            `json:"id"`
 	Kind           string            `json:"kind"`
+	SerialID       int               `json:"serial_id"`
 	DepotID        string            `json:"depot_id"`
 	Name           map[string]string `json:"name"`
 	Mission        map[string]string `json:"mission"`
 	Area           map[string]string `json:"area"`
 	RouteNode      string            `json:"route_node"`
 	ZipRouteNode   string            `json:"zip_route_node"`
+	WalkOnly       bool              `json:"walk_only"`
+	ZiplineOnly    bool              `json:"zipline_only"`
+	VerifyName     bool              `json:"verify_name"`
 	RetryRouteNode string            `json:"retry_route_node"`
 }
 
 type depot struct {
 	ID             string
+	Names          map[string]string
 	Map            string
 	RouteNode      string
 	ZipRouteNode   string
+	WalkOnly       bool
+	ZiplineOnly    bool
 	RetryRouteNode string
 }
 
@@ -93,6 +111,19 @@ func getDestinations() ([]destination, error) {
 		catalog.depots = depots
 	})
 	return catalog.destinations, catalog.err
+}
+
+func getDestination(destinationID string) (destination, error) {
+	destinations, err := getDestinations()
+	if err != nil {
+		return destination{}, err
+	}
+	for _, candidate := range destinations {
+		if candidate.ID == destinationID {
+			return candidate, nil
+		}
+	}
+	return destination{}, fmt.Errorf("delivery destination %q is not present in the AutoDelivery catalog", destinationID)
 }
 
 func getDepot(depotID string) (depot, error) {
@@ -132,14 +163,24 @@ func buildDepots(generated generatedCatalog) (map[string]depot, error) {
 		if strings.TrimSpace(source.RouteNode) == "" || strings.TrimSpace(source.ZipRouteNode) == "" {
 			return nil, fmt.Errorf("AutoDelivery depot %q has incomplete route nodes", source.ID)
 		}
+		if len(localizedTexts(source.Name)) == 0 {
+			return nil, fmt.Errorf("AutoDelivery depot %q has no localized name", source.ID)
+		}
 		if _, exists := depots[source.ID]; exists {
 			return nil, fmt.Errorf("duplicate AutoDelivery depot id %q", source.ID)
 		}
+		// walk_only 与 zipline_only 是对同一条路线的相反约束，同时声明时没有可用的滑索策略。
+		if source.WalkOnly && source.ZiplineOnly {
+			return nil, fmt.Errorf("AutoDelivery depot %q is both walk-only and zipline-only", source.ID)
+		}
 		depots[source.ID] = depot{
 			ID:             source.ID,
+			Names:          source.Name,
 			Map:            source.Map,
 			RouteNode:      source.RouteNode,
 			ZipRouteNode:   source.ZipRouteNode,
+			WalkOnly:       source.WalkOnly,
+			ZiplineOnly:    source.ZiplineOnly,
 			RetryRouteNode: source.RetryRouteNode,
 		}
 	}
@@ -168,12 +209,24 @@ func buildDestinations(generated generatedCatalog, depots map[string]depot) ([]a
 		default:
 			return nil, nil, fmt.Errorf("AutoDelivery destination %q has unknown kind %q", source.ID, source.Kind)
 		}
+		if source.Kind == destinationKindRecycleBin && source.SerialID <= 0 {
+			return nil, nil, fmt.Errorf("AutoDelivery recycle bin destination %q has invalid serial id %d", source.ID, source.SerialID)
+		}
+		// walk_only 与 zipline_only 是对同一条路线的相反约束，同时声明时没有可用的滑索策略。
+		if source.WalkOnly && source.ZiplineOnly {
+			return nil, nil, fmt.Errorf("AutoDelivery destination %q is both walk-only and zipline-only", source.ID)
+		}
+		// 只有 NPC 终点的世界交互提示会显示终点名称，其他终点开启名称复核只会一直失败。
+		if source.VerifyName && source.Kind != destinationKindNPC {
+			return nil, nil, fmt.Errorf("AutoDelivery destination %q enables name check on kind %q", source.ID, source.Kind)
+		}
 		if _, exists := depots[source.DepotID]; !exists {
 			return nil, nil, fmt.Errorf("AutoDelivery destination %q references unknown depot %q", source.ID, source.DepotID)
 		}
 		if strings.TrimSpace(source.RouteNode) == "" || strings.TrimSpace(source.ZipRouteNode) == "" {
 			return nil, nil, fmt.Errorf("AutoDelivery destination %q has incomplete route nodes", source.ID)
 		}
+		depotRoute := depots[source.DepotID]
 		areaID, err := localizedAreaID(source.Area)
 		if err != nil {
 			return nil, nil, fmt.Errorf("AutoDelivery destination %q: %w", source.ID, err)
@@ -193,11 +246,18 @@ func buildDestinations(generated generatedCatalog, depots map[string]depot) ([]a
 		destinations = append(destinations, destination{
 			ID:               source.ID,
 			Kind:             source.Kind,
+			Map:              depotRoute.Map,
 			AreaID:           areaID,
 			DepotID:          source.DepotID,
 			RouteNode:        source.RouteNode,
 			ZipRouteNode:     source.ZipRouteNode,
 			RetryRouteNode:   source.RetryRouteNode,
+			WalkOnly:         source.WalkOnly,
+			ZiplineOnly:      source.ZiplineOnly,
+			VerifyName:       source.VerifyName,
+			SerialID:         source.SerialID,
+			Names:            source.Name,
+			AreaNames:        source.Area,
 			DestinationTexts: destinationTexts,
 			ObjectiveTexts:   objectiveTexts,
 		})
@@ -211,6 +271,32 @@ func buildDestinations(generated generatedCatalog, depots map[string]depot) ([]a
 	}
 	sort.Slice(areas, func(i, j int) bool { return areas[i].ID < areas[j].ID })
 	return areas, destinations, nil
+}
+
+func localizedName(names map[string]string, fallback string) string {
+	return localizedNameForLang(names, i18n.Lang(), fallback)
+}
+
+func localizedNameForLang(names map[string]string, lang string, fallback string) string {
+	lang = i18n.NormalizeLang(lang)
+	if name := strings.TrimSpace(names[lang]); name != "" {
+		return name
+	}
+	if name := strings.TrimSpace(names[i18n.DefaultLang]); name != "" {
+		return name
+	}
+
+	languages := make([]string, 0, len(names))
+	for language := range names {
+		languages = append(languages, language)
+	}
+	sort.Strings(languages)
+	for _, language := range languages {
+		if name := strings.TrimSpace(names[language]); name != "" {
+			return name
+		}
+	}
+	return fallback
 }
 
 func localizedAreaID(localized map[string]string) (string, error) {

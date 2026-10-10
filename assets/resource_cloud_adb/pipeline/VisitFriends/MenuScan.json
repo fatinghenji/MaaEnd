@@ -1,0 +1,17 @@
+{
+    "VisitFriendsMenuScanDetailClose": {
+        "recognition": {
+            "type": "TemplateMatch",
+            "param": {
+                "roi": [
+                    560,
+                    455,
+                    80,
+                    70
+                ],
+                "template": "Common/Button/CancelButtonType2.png",
+                "threshold": 0.9
+            }
+        }
+    }
+}

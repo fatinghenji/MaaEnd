@@ -1,83 +1,48 @@
 package ims
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 )
 
-func TestParseAddItemDataParamEmpty(t *testing.T) {
-	params, err := parseAddItemDataParam("")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if params.GridType != "" || len(params.ItemFilters) != 0 || len(params.ItemIDs) != 0 {
-		t.Fatalf("params=%+v", params)
-	}
+func withRecognitionItemsPath(t *testing.T, path string) {
+	t.Helper()
+	resetRecognitionItemsForTest()
+	recognitionItemsPathFunc = func() string { return path }
+	t.Cleanup(func() {
+		recognitionItemsPathFunc = defaultRecognitionItemsPath
+		resetRecognitionItemsForTest()
+	})
+}
 
-	params, err = parseAddItemDataParam(`{"item_filters":["Isolate:*"],"item_ids":["item_spaceship_credit"]}`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(params.ItemFilters) != 1 || params.ItemFilters[0] != "Isolate:*" {
-		t.Fatalf("params=%+v", params)
-	}
-	if len(params.ItemIDs) != 1 || params.ItemIDs[0] != "item_spaceship_credit" {
-		t.Fatalf("params=%+v", params)
+func TestResolveAddItemDataCandidatesCatalogMissingIsUnavailable(t *testing.T) {
+	withRecognitionItemsPath(t, filepath.Join(t.TempDir(), "missing.json"))
+
+	_, _, err := resolveAddItemDataCandidates(nil, []string{"item_domain_jinlong_coupon"})
+	if !errors.Is(err, errRecognitionCatalogUnavailable) {
+		t.Fatalf("missing catalog should be unavailable, got %v", err)
 	}
 }
 
-func TestResolveAddItemDataCandidatesUnion(t *testing.T) {
-	resetRecognitionItemsForTest()
-	oldPath := recognitionItemsPathFunc
-	t.Cleanup(func() {
-		recognitionItemsPathFunc = oldPath
-		resetRecognitionItemsForTest()
-	})
-
-	dir := t.TempDir()
-	path := filepath.Join(dir, "recognition_items.json")
-	content := `{
-		"item_spaceship_credit": {"storageKind":"Isolate","categoryType":"SpaceshipGold"},
-		"item_weapon_expcard_low": {"storageKind":"ValuableDepot","categoryType":"SpecialItem"},
-		"item_weapon_expcard_mid": {"storageKind":"ValuableDepot","categoryType":"SpecialItem"},
-		"item_weapon_break_low": {"storageKind":"ValuableDepot","categoryType":"SpecialItem"}
-	}`
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+func TestResolveAddItemDataCandidatesUnknownIDStaysHard(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "recognition_items.json")
+	body := []byte(`{"item_known":{"storageKind":"ValuableDepot","categoryType":"SpecialItem"}}`)
+	if err := os.WriteFile(path, body, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	recognitionItemsPathFunc = func() string { return path }
+	withRecognitionItemsPath(t, path)
 
-	filters, ids, err := resolveAddItemDataCandidates(
-		[]string{"Isolate:SpaceshipGold"},
-		[]string{"item_weapon_expcard_low", "item_weapon_expcard_mid"},
-	)
-	if err != nil {
-		t.Fatal(err)
+	_, _, err := resolveAddItemDataCandidates(nil, []string{"item_missing"})
+	if err == nil || errors.Is(err, errRecognitionCatalogUnavailable) {
+		t.Fatalf("unknown item_id should stay a hard error, got %v", err)
 	}
-	wantFilters := map[string]struct{}{
-		"Isolate:SpaceshipGold":     {},
-		"ValuableDepot:SpecialItem": {},
-	}
-	if len(filters) != len(wantFilters) {
-		t.Fatalf("filters=%v", filters)
-	}
-	for _, f := range filters {
-		if _, ok := wantFilters[f]; !ok {
-			t.Fatalf("unexpected filter %s in %v", f, filters)
-		}
-	}
-	wantIDs := map[string]struct{}{
-		"item_spaceship_credit":   {},
-		"item_weapon_expcard_low": {},
-		"item_weapon_expcard_mid": {},
-	}
-	if len(ids) != len(wantIDs) {
-		t.Fatalf("ids=%v", ids)
-	}
-	for _, id := range ids {
-		if _, ok := wantIDs[id]; !ok {
-			t.Fatalf("unexpected id %s in %v", id, ids)
-		}
+}
+
+func TestResolveAddItemDataCandidatesDuplicateStaysHard(t *testing.T) {
+	_, _, err := resolveAddItemDataCandidates(nil, []string{"item_a", "item_a"})
+	if err == nil || errors.Is(err, errRecognitionCatalogUnavailable) {
+		t.Fatalf("duplicate item_id should stay a hard error, got %v", err)
 	}
 }

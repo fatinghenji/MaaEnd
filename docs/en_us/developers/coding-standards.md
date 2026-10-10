@@ -106,6 +106,37 @@ For example, in a product purchase task, Go Service only does price comparison, 
 In one sentence: **Pipeline manages the process, Go manages the difficulties.**  
 _Unnecessary Go logic greatly increases code complexity, making it extremely difficult for the next developer to develop and debug, and very challenging for cross-platform adaptation._
 
+### Using Handles Inside Callbacks
+
+Since maa-framework-go v4.0.0-beta.19, the `ctx`, `tasker`, `controller`, and `resource` you get inside a Custom `Run` or an EventSink method are only **borrowed**. Misusing them does not fail at compile time; it fails at runtime:
+
+- **Use them only within the current callback.** They all become invalid once the callback returns (`ctx.GetTasker()` returns `nil`, other methods return `maa.ErrClosed`). Do not store them in package-level variables or hand them to a goroutine that keeps running after the callback returns.
+- **Get the controller once per callback and pass it down.** Every call to `GetController()` destroys the object returned by the previous call; using the old one is a use-after-free and crashes go-service at random. The same applies to `GetResource()`. If a helper needs the controller, give it a `*maa.Controller` parameter instead of fetching it from `ctx` again.
+- **Check for nil before use.** `GetTasker()` / `GetController()` return `nil` when the client has disconnected, and a nil-pointer panic inside a callback terminates the whole go-service process.
+- **Use `pienv.ControllerType()` to tell controller types apart.** Do not fetch the controller and call `GetInfo()` just for that.
+- **Return `nil, false` when a recognition does not match.** If you return a non-nil result, its `Box` and `Detail` are written into the recognition detail even on a miss.
+
+```go
+// ❌ capture fetches the controller again, which invalidates the ctrl held by Run
+ctrl := ctx.GetTasker().GetController()
+img := capture(ctx)
+ctrl.PostClick(x, y).Wait()
+
+// ✅ fetch once at the entry point, check for nil, pass it down
+tasker := ctx.GetTasker()
+if tasker == nil {
+    return false
+}
+ctrl := tasker.GetController()
+if ctrl == nil {
+    return false
+}
+img := capture(ctrl)
+ctrl.PostClick(x, y).Wait()
+```
+
+See the "句柄生命周期" section of the [Go Service guide](../../../.agents/skills/go-service-guide/SKILL.md) for the full rules, and the [maa-framework-go beta.19 migration guide](https://github.com/MaaXYZ/maa-framework-go/blob/v4.0.0-beta.19/docs/migration/v4.0.0-beta.19.md) for the binding-side changes.
+
 ## Cpp Algo Standards
 
 Cpp Algo supports native OpenCV and ONNX Runtime, but it is only recommended for implementing individual recognition algorithms. Various business logic like operations is recommended to be written using Go Service.
@@ -139,12 +170,12 @@ A functional change in MaaEnd often involves more than one place.
 
 - Add, update, or remove registrations in the corresponding sub-package `register.go`
 - When adding or removing a sub-package, integrate it into or remove it from `registerAll()` in `agent/go-service/register.go`
-- After making changes, re-run `uv run tools/build_and_install.py`
+- After making changes, re-run `uv run build-and-install`
 
 ### Maintaining Cpp Algo Custom Components
 
 - Add, update, or remove registrations in `agent/cpp-algo/source/main.cpp` with `MaaAgentServerRegisterCustomAction` or `MaaAgentServerRegisterCustomRecognition`
-- After making changes, re-run `uv run tools/build_and_install.py --cpp-algo`
+- After making changes, re-run `uv run build-and-install --cpp-algo`
 
 ### Maintaining Custom Schemas
 
@@ -171,7 +202,7 @@ After modifying `assets/resource/pipeline/**/*.json`, just reload the resource i
 After modifying `agent/go-service/`, you must recompile:
 
 ```bash
-uv run tools/build_and_install.py
+uv run build-and-install
 ```
 
 You can use the `build` task in VS Code's terminal run tasks for quick execution, or set breakpoints or attach debugging to go-service.
@@ -181,7 +212,7 @@ You can use the `build` task in VS Code's terminal run tasks for quick execution
 `assets/interface.json` is the main source file. After modification, run:
 
 ```bash
-uv run tools/build_and_install.py
+uv run build-and-install
 ```
 
 If `install/interface.json` is modified through a tool, it needs to be manually synced back to `assets/interface.json`.
@@ -191,7 +222,7 @@ If `install/interface.json` is modified through a tool, it needs to be manually 
 Requires a VC generator and cmake; generally, developers do not need to change it:
 
 ```bash
-uv run tools/build_and_install.py --cpp-algo
+uv run build-and-install --cpp-algo
 ```
 
 ## Resource Standards
@@ -206,7 +237,7 @@ All images and coordinates (`roi`, `target`, `box`) are based on **1280x720**. M
 
 ### Resource Folder Link
 
-The resource folder is in a linked state. Modifying `assets` is equivalent to modifying the content in `install`; no additional copying is needed. **However, `interface.json` is a copy**; modification requires manual sync or running `build_and_install.py`.
+The resource folder is in a linked state. Modifying `assets` is equivalent to modifying the content in `install`; no additional copying is needed. **However, `interface.json` is a copy**; modification requires manual sync or running `build-and-install`.
 
 ### Folder Naming
 
@@ -260,8 +291,8 @@ MaaEnd uses maa-tools for node testing. See [Node Testing Documentation](./node-
 | Pitfall | Handling |
 | ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
 | `pnpm check` / `pnpm test` fails to run | `pnpm install` |
-| Model or C++ dependency directory missing | `git submodule update --init --recursive` or `uv run tools/setup_workspace.py --update` |
-| Go changes not taking effect | Forgot `uv run tools/build_and_install.py` |
+| Model or C++ dependency directory missing | `git submodule update --init --recursive` or `uv run setup-workspace --update` |
+| Go changes not taking effect | Forgot `uv run build-and-install` |
 | Directly referenced `__ScenePrivate*` nodes | Should reference scene interface nodes exposed in the `Interface` directory |
 | Only focusing on the main flow, not handling pop-ups/loading | Treat pop-ups, loading, and intermediate states as normal scenarios |
 | Changed tasks but didn't add text | Text goes in `assets/locales/` |

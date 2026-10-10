@@ -5,20 +5,21 @@
             "label": "$task.GiftOperator.label",
             "entry": "GiftOperatorMain",
             "description": "$task.GiftOperator.description",
-            "option": [
-                "StashBackpackSubTask",
-                "OnlyReceiveGift"
-            ],
             "group": [
                 "dijiang_ship"
             ],
             "controller": [
                 "ADB",
+                "CloudADB",
                 "Linux-Gamescope",
                 "Linux-ScreenCast",
                 "Linux-Wlroots",
                 "PlayCover",
                 "Win32-Front"
+            ],
+            "option": [
+                "StashBackpackSubTask",
+                "OnlyReceiveGift"
             ]
         }
     ],
@@ -26,7 +27,6 @@
         "SelectOperator": {
             "type": "select",
             "label": "$option.SelectOperator.label",
-            "default_case": "Any",
             "description": "$option.SelectOperator.description",
             "cases": [
                 {
@@ -863,7 +863,7 @@
                     }
                 },
                 {
-                    "name": "Jue",
+                    "name": "Arcane",
                     "label": "$operator.Arcane",
                     "pipeline_override": {
                         "GiftOperatorContacSortOrder": {
@@ -921,14 +921,74 @@
                             ]
                         }
                     }
+                },
+                {
+                    "name": "Typhoeus",
+                    "label": "$operator.Typhoeus",
+                    "pipeline_override": {
+                        "GiftOperatorContacSortOrder": {
+                            "enabled": false
+                        },
+                        "GiftOperatorContacSortBy": {
+                            "enabled": false
+                        },
+                        "GiftOperatorSelectOp1": {
+                            "enabled": false
+                        },
+                        "GiftOperatorSelectSpecifiedOp": {
+                            "enabled": true,
+                            "template": [
+                                "GiftOperator/Operators/Typhoeus.png"
+                            ]
+                        },
+                        "GiftOperatorName": {
+                            "expected": [
+                                "提弗洛斯",
+                                "提弗洛斯",
+                                "Typhoeus",
+                                "ティフォロス",
+                                "티프로스"
+                            ]
+                        }
+                    }
+                },
+                {
+                    "name": "Purrchena",
+                    "label": "$operator.Purrchena",
+                    "pipeline_override": {
+                        "GiftOperatorContacSortOrder": {
+                            "enabled": false
+                        },
+                        "GiftOperatorContacSortBy": {
+                            "enabled": false
+                        },
+                        "GiftOperatorSelectOp1": {
+                            "enabled": false
+                        },
+                        "GiftOperatorSelectSpecifiedOp": {
+                            "enabled": true,
+                            "template": [
+                                "GiftOperator/Operators/Purrchena.png"
+                            ]
+                        },
+                        "GiftOperatorName": {
+                            "expected": [
+                                "噗切娜",
+                                "噗切娜",
+                                "Purrchena",
+                                "プチエナ",
+                                "푸치나"
+                            ]
+                        }
+                    }
                 }
-            ]
+            ],
+            "default_case": "Any"
         },
         "OnlyReceiveGift": {
             "type": "switch",
             "label": "$option.OnlyReceiveGift.label",
             "description": "$option.OnlyReceiveGift.description",
-            "default_case": "No",
             "cases": [
                 {
                     "name": "Yes",
@@ -971,17 +1031,17 @@
                     "name": "No",
                     "option": [
                         "SelectOperator",
-                        "SendWrongGift"
+                        "GiftCount"
                     ],
                     "pipeline_override": {}
                 }
-            ]
+            ],
+            "default_case": "No"
         },
         "AcceptAllGifts": {
             "type": "switch",
             "label": "$option.AcceptAllGifts.label",
             "description": "$option.AcceptAllGifts.description",
-            "default_case": "No",
             "cases": [
                 {
                     "name": "Yes",
@@ -997,7 +1057,8 @@
                     "name": "No",
                     "pipeline_override": {}
                 }
-            ]
+            ],
+            "default_case": "No"
         },
         "GiftCount": {
             "type": "input",
@@ -1008,9 +1069,9 @@
                     "name": "Count",
                     "label": "$option.GiftCount.inputs.Count.label",
                     "description": "$option.GiftCount.inputs.Count.description",
+                    "default": "1",
                     "pipeline_type": "int",
-                    "verify": "^[1-9]\\d*$",
-                    "default": "1"
+                    "verify": "^[1-9]\\d*$"
                 }
             ],
             "pipeline_override": {
@@ -1019,36 +1080,6 @@
                     "repeat_delay": 100
                 }
             }
-        },
-        "SendWrongGift": {
-            "type": "switch",
-            "label": "$option.SendWrongGift.label",
-            "description": "$option.SendWrongGift.description",
-            "default_case": "No",
-            "cases": [
-                {
-                    "name": "Yes",
-                    "pipeline_override": {
-                        "GiftOperatorClickGift": {
-                            "repeat": 1
-                        },
-                        "GiftOperatorClickGiftColorNumber": {
-                            "recognition": {
-                                "param": {
-                                    "index": -1
-                                }
-                            }
-                        }
-                    }
-                },
-                {
-                    "name": "No",
-                    "option": [
-                        "GiftCount"
-                    ],
-                    "pipeline_override": {}
-                }
-            ]
         }
     }
 }

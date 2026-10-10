@@ -17,6 +17,8 @@ from urllib.error import HTTPError
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
+import json5
+
 from fixed_items import FIXED_ITEMS
 
 from text import clean_text, validate_identifier
@@ -25,6 +27,7 @@ from text import clean_text, validate_identifier
 ITEM_TABLE_URL = "https://assets.fz.wiki/output_beyondmap/item_mini_table.json"
 WEAPON_TABLE_URL = "https://assets.fz.wiki/output_maaend/weapons.json"
 IMAGE_BASE_URL = "https://assets.fz.wiki/output_image/itemicon"
+BIG_IMAGE_BASE_URL = "https://assets.fz.wiki/output_image/itemiconbig"
 LANG_URL = "https://assets.fz.wiki/output_beyondmap/i18n/{locale}/lang.json"
 LOCALES = {
     "zh-CN": "CN",
@@ -36,6 +39,28 @@ LOCALES = {
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 DEFAULT_CACHE_ROOT = Path("tools/icon_recognition/.cache/downloads")
 DEFAULT_BLACKLIST_PATH = Path(__file__).with_name("blacklist.json")
+BIG_ICON_IDS_PATH = Path(__file__).with_name("big_icon_ids.json")
+
+
+def load_big_icon_ids(path: Path = BIG_ICON_IDS_PATH) -> set[str]:
+    ids = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(ids, list) or any(not isinstance(icon_id, str) for icon_id in ids):
+        raise ValueError("大图名单必须是 iconId 字符串数组")
+    for icon_id in ids:
+        validate_identifier(icon_id, field="大图名单 iconId")
+    if len(ids) != len(set(ids)):
+        raise ValueError("大图名单存在重复 iconId")
+    return set(ids)
+
+
+def rarity_directories(root: Path) -> list[Path]:
+    if not root.is_dir():
+        return []
+    return [
+        path
+        for path in root.iterdir()
+        if path.is_dir() and path.name.isascii() and path.name.isdecimal()
+    ]
 
 
 def validate_icon_png_bytes(content: bytes) -> int:
@@ -50,6 +75,9 @@ def validate_icon_png_bytes(content: bytes) -> int:
     if width & (width - 1):
         raise ValueError(f"图标 PNG 边长必须是 2 的整数次幂，实际为 {width}")
     return width
+
+
+
 ITEM_FIELDS = (
     "name",
     "category",
@@ -145,6 +173,17 @@ def _require_optional_string(
     return value
 
 
+def _require_optional_boolean(
+    source: Mapping[str, Any], field: str, context: str
+) -> bool:
+    if field not in source:
+        return False
+    value = source[field]
+    if not isinstance(value, bool):
+        raise ValueError(f"{context}.{field} 必须是布尔值")
+    return value
+
+
 def _require_string_list(
     source: Mapping[str, Any], field: str, context: str
 ) -> list[str]:
@@ -163,7 +202,7 @@ def load_item_blacklist(
     path: str | Path = DEFAULT_BLACKLIST_PATH,
 ) -> tuple[ItemBlacklistRule, ...]:
     source_path = Path(path)
-    payload = json.loads(source_path.read_text(encoding="utf-8-sig"))
+    payload = json5.loads(source_path.read_text(encoding="utf-8-sig"))
     if not isinstance(payload, Mapping):
         raise ValueError(f"黑名单顶层必须是对象: {source_path}")
     raw_rules = payload.get("rules")
@@ -212,7 +251,7 @@ def _normalize_item(item_id: str, raw_source: Any) -> dict[str, Any]:
 
     storage_kind = _require_string(raw_source, "storageKind", item_id)
     category_type = _require_string(raw_source, "categoryType", item_id)
-    return {
+    result = {
         "name": clean_text(raw_source.get("name"), field=f"{item_id}.name"),
         "category": _category_name(storage_kind, category_type),
         "storageKind": storage_kind,
@@ -232,46 +271,59 @@ def _normalize_item(item_id: str, raw_source: Any) -> dict[str, Any]:
             raw_source, "emptyContainers", item_id
         ),
     }
+    if _require_optional_boolean(raw_source, "regionRestricted", item_id):
+        result["regionRestricted"] = True
+    return result
 
 
-def prepare_item_map(
-    item_table: Mapping[str, Any],
+def apply_item_blacklist(
+    item_map: Mapping[str, Any],
     *,
     blacklist: Sequence[ItemBlacklistRule] | None = None,
 ) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
-    """规范化 mini table，并按黑名单和引用感知规则去除条目。"""
+    """应用显式黑名单，并清理因此失去所有容器引用的流体条目。"""
 
-    if not isinstance(item_table, Mapping):
-        raise ValueError("item_mini_table.json 顶层必须是对象")
-    normalized = {
-        item_id: _normalize_item(item_id, raw_source)
-        for item_id, raw_source in item_table.items()
-    }
+    if not isinstance(item_map, Mapping):
+        raise ValueError("item map 顶层必须是对象")
+    items: dict[str, dict[str, Any]] = {}
+    for item_id, raw_payload in item_map.items():
+        if not isinstance(raw_payload, Mapping):
+            raise ValueError(f"item map 项必须是对象: {item_id}")
+        payload = dict(raw_payload)
+        full_containers = payload.get("fullContainers", [])
+        if not isinstance(full_containers, list) or not all(
+            isinstance(container_id, str) and container_id
+            for container_id in full_containers
+        ):
+            raise ValueError(f"{item_id}.fullContainers 必须是非空字符串数组")
+        payload["fullContainers"] = list(full_containers)
+        items[item_id] = payload
+
     active_blacklist = (
         load_item_blacklist() if blacklist is None else tuple(blacklist)
     )
     removed_ids: set[str] = set()
     removals: list[dict[str, Any]] = []
-    for item_id, payload in normalized.items():
+    for item_id, payload in items.items():
         # 分类条件用于约束黑名单作用域，避免上游复用 ID 后误删其他类型物品。
         if any(
             item_id in ids
-            and payload["storageKind"] == storage_kind
-            and payload["categoryType"] == category_type
+            and payload.get("storageKind") == storage_kind
+            and payload.get("categoryType") == category_type
             for storage_kind, category_type, ids in active_blacklist
         ):
             removed_ids.add(item_id)
             removals.append(
                 {
                     "removedId": item_id,
-                    "name": payload["name"],
-                    "iconId": payload["iconId"],
+                    "name": payload.get("name", ""),
+                    "iconId": payload.get("iconId", ""),
                     "reason": "blacklist",
                 }
             )
     while True:
         orphaned = []
-        for item_id, payload in normalized.items():
+        for item_id, payload in items.items():
             if item_id in removed_ids:
                 continue
             remaining_containers = [
@@ -288,55 +340,48 @@ def prepare_item_map(
             break
         for item_id in orphaned:
             removed_ids.add(item_id)
-            payload = normalized[item_id]
+            payload = items[item_id]
             removals.append(
                 {
                     "removedId": item_id,
-                    "name": payload["name"],
-                    "iconId": payload["iconId"],
+                    "name": payload.get("name", ""),
+                    "iconId": payload.get("iconId", ""),
                     "reason": "blacklist-orphan",
                 }
             )
 
+    removals.sort(key=lambda row: row["removedId"])
+    return {
+        item_id: payload
+        for item_id, payload in items.items()
+        if item_id not in removed_ids
+    }, removals
+
+
+def prepare_item_map(
+    item_table: Mapping[str, Any],
+    *,
+    blacklist: Sequence[ItemBlacklistRule] | None = None,
+) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
+    """规范化 mini table，并按黑名单和引用感知规则去除条目。"""
+
+    if not isinstance(item_table, Mapping):
+        raise ValueError("item_mini_table.json 顶层必须是对象")
+    normalized = {
+        item_id: _normalize_item(item_id, raw_source)
+        for item_id, raw_source in item_table.items()
+    }
+    filtered, removals = apply_item_blacklist(normalized, blacklist=blacklist)
+    removed_ids: set[str] = set()
     referenced_ids = {
         container_id
-        for item_id, payload in normalized.items()
-        if item_id not in removed_ids
+        for payload in filtered.values()
         for container_id in payload["fullContainers"]
     }
-    icon_groups: dict[str, list[str]] = defaultdict(list)
-    for item_id, payload in normalized.items():
-        if item_id not in removed_ids and payload["iconId"]:
-            icon_groups[payload["iconId"]].append(item_id)
-    for icon_id, member_ids in icon_groups.items():
-        if len(member_ids) < 2:
-            continue
-        regular_ids = [
-            item_id
-            for item_id in member_ids
-            if not normalized[item_id]["name"].startswith("模拟")
-        ]
-        if not regular_ids:
-            continue
-        kept_id = min(regular_ids, key=lambda item_id: (len(item_id), item_id))
-        for item_id in member_ids:
-            if not normalized[item_id]["name"].startswith("模拟"):
-                continue
-            removed_ids.add(item_id)
-            removals.append(
-                {
-                    "removedId": item_id,
-                    "keptId": kept_id,
-                    "name": normalized[item_id]["name"],
-                    "iconId": icon_id,
-                    "reason": "simulated-duplicate-icon",
-                }
-            )
 
     duplicate_groups: dict[tuple[str, str], list[str]] = defaultdict(list)
-    for item_id, payload in normalized.items():
-        if item_id not in removed_ids:
-            duplicate_groups[(payload["name"], payload["iconId"])].append(item_id)
+    for item_id, payload in filtered.items():
+        duplicate_groups[(payload["name"], payload["iconId"])].append(item_id)
     for (name, icon_id), member_ids in duplicate_groups.items():
         if len(member_ids) < 2:
             continue
@@ -363,7 +408,7 @@ def prepare_item_map(
 
     items = {
         item_id: payload
-        for item_id, payload in normalized.items()
+        for item_id, payload in filtered.items()
         if item_id not in removed_ids
     }
     removals.sort(key=lambda row: row["removedId"])
@@ -381,7 +426,9 @@ def _normalized_weapon(
         "category": _category_name("ValuableDepot", "Weapon"),
         "storageKind": "ValuableDepot",
         "categoryType": "Weapon",
-        "iconId": item_id,
+        "iconId": validate_identifier(
+            raw_source.get("icon_id", item_id), field=f"{item_id}.icon_id"
+        ),
         "rarity": _require_rarity(raw_source, item_id),
         "fluidType": None,
         "fluid": None,
@@ -456,7 +503,7 @@ def merge_item_sources(
 
 
 def build_download_jobs(
-    items: Mapping[str, Mapping[str, Any]], image_root: Path
+    items: Mapping[str, Mapping[str, Any]], image_root: Path, *, image_base_url: str = IMAGE_BASE_URL
 ) -> tuple[list[DownloadJob], list[dict[str, Any]]]:
     jobs_by_destination: dict[Path, DownloadJob] = {}
     missing_icons: list[dict[str, Any]] = []
@@ -479,7 +526,7 @@ def build_download_jobs(
         job = DownloadJob(
             icon_id=icon_id,
             rarity=rarity,
-            url=f"{IMAGE_BASE_URL}/{quote(icon_id, safe='')}.png@raw",
+            url=f"{image_base_url}/{quote(icon_id, safe='')}.png@raw",
             destination=destination,
         )
         previous = jobs_by_destination.get(destination)
@@ -491,6 +538,47 @@ def build_download_jobs(
     )
     missing_icons.sort(key=lambda row: row["id"])
     return jobs, missing_icons
+
+
+def relocate_rarity_changed_icons(
+    jobs: Sequence[DownloadJob], image_root: Path
+) -> int:
+    """在下载前迁移稀有度变更的缓存图标，避免重复下载并留下旧路径。"""
+    destinations: dict[str, Path] = {}
+    for job in jobs:
+        previous = destinations.get(job.icon_id)
+        if previous is not None and previous != job.destination:
+            raise ValueError(f"同一 iconId 对应多个稀有度: {job.icon_id}")
+        destinations[job.icon_id] = job.destination
+
+    moved = 0
+    for icon_id, destination in destinations.items():
+        candidates = []
+        for rarity_directory in rarity_directories(image_root):
+            path = rarity_directory / f"{icon_id}.png"
+            if path.is_file() and path != destination:
+                candidates.append(path)
+        if len(candidates) > 1:
+            raise ValueError(f"同一 iconId 存在多个旧稀有度图标: {icon_id}")
+        if not candidates:
+            continue
+
+        source = candidates[0]
+        source_metadata = _metadata_path(source)
+        destination_metadata = _metadata_path(destination)
+        if destination.is_file():
+            # 目标已存在时保留它，避免覆盖可能经过 CI 处理的图片。
+            source.unlink()
+            source_metadata.unlink(missing_ok=True)
+            continue
+        if not is_valid_png(source):
+            continue
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        source.replace(destination)
+        if source_metadata.is_file():
+            source_metadata.replace(destination_metadata)
+        moved += 1
+    return moved
 
 
 def is_valid_png(path: Path) -> bool:
@@ -507,8 +595,14 @@ def _metadata_path(destination: Path) -> Path:
     return destination.with_suffix(destination.suffix + ".meta.json")
 
 
-def fetch(url: str, destination: Path, *, timeout: float = 60) -> dict[str, Any]:
-    """使用 ETag/Last-Modified 条件请求原子更新单个远端文件。"""
+def fetch(
+    url: str,
+    destination: Path,
+    *,
+    timeout: float = 60,
+    validate_content: Callable[[bytes], Any] | None = None,
+) -> dict[str, Any]:
+    """来源地址未变化时使用条件请求；切换来源后重新下载并原子更新。"""
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     metadata_path = _metadata_path(destination)
@@ -518,7 +612,9 @@ def fetch(url: str, destination: Path, *, timeout: float = 60) -> dict[str, Any]
         else {}
     )
     headers = {"User-Agent": "MaaEnd-IconRecognition/1.0"}
-    if destination.is_file():
+    if destination.is_file() and metadata.get("url") == url and (
+        validate_content is None or is_valid_png(destination)
+    ):
         if isinstance(metadata.get("etag"), str):
             headers["If-None-Match"] = metadata["etag"]
         if isinstance(metadata.get("lastModified"), str):
@@ -527,6 +623,8 @@ def fetch(url: str, destination: Path, *, timeout: float = 60) -> dict[str, Any]
     try:
         with urlopen(request, timeout=timeout) as response:
             data = response.read()
+            if validate_content is not None:
+                validate_content(data)
             result: dict[str, Any] = {
                 "url": url,
                 "bytes": len(data),
@@ -558,22 +656,14 @@ def fetch(url: str, destination: Path, *, timeout: float = 60) -> dict[str, Any]
 
 
 def _download_icon(job: DownloadJob, timeout: float) -> str:
-    if is_valid_png(job.destination):
-        return "skipped"
-    job.destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = job.destination.with_suffix(job.destination.suffix + ".part")
-    request = Request(
-        job.url, headers={"User-Agent": "MaaEnd-IconRecognition/1.0"}
+    previous = job.destination.read_bytes() if is_valid_png(job.destination) else None
+    fetch(
+        job.url,
+        job.destination,
+        timeout=timeout,
+        validate_content=validate_icon_png_bytes,
     )
-    try:
-        with urlopen(request, timeout=timeout) as response:
-            content = response.read()
-        validate_icon_png_bytes(content)
-        temporary.write_bytes(content)
-        temporary.replace(job.destination)
-        return "downloaded"
-    finally:
-        temporary.unlink(missing_ok=True)
+    return "skipped" if previous == job.destination.read_bytes() else "downloaded"
 
 
 def download_images(
@@ -699,7 +789,15 @@ def run(
     merged = merge_item_sources(items, weapons)
     _write_json(root / "item.json", merged)
     jobs, missing_icons = build_download_jobs(merged, root / "images")
+    relocated = relocate_rarity_changed_icons(jobs, root / "images")
     report = download_images(jobs, workers=workers, timeout=timeout)
+    big_icon_ids = load_big_icon_ids()
+    big_items = {item_id: item for item_id, item in merged.items() if item.get("iconId") in big_icon_ids}
+    big_jobs, _ = build_download_jobs(big_items, root / "big_images", image_base_url=BIG_IMAGE_BASE_URL)
+    if {job.icon_id for job in big_jobs} != big_icon_ids:
+        raise ValueError("大图名单包含不在物品源数据中的 iconId")
+    relocate_rarity_changed_icons(big_jobs, root / "big_images")
+    big_report = download_images(big_jobs, workers=workers, timeout=timeout)
     blacklist_removals = [
         row for row in removals if row["reason"] == "blacklist"
     ]
@@ -723,6 +821,8 @@ def run(
             "duplicateRemovals": duplicate_removals,
             "missingIconCount": len(missing_icons),
             "missingIconItems": missing_icons,
+            "relocatedCount": relocated,
+            "bigImages": big_report,
         }
     )
     _write_json(root / "download_report.json", report)

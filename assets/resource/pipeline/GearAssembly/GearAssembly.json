@@ -40,13 +40,13 @@
         "pre_delay": 0,
         "action": "Click",
         "post_wait_freezes": {
+            "time": 300,
             "target": [
                 0,
                 644,
                 135,
                 32
-            ],
-            "time": 300
+            ]
         },
         "post_delay": 0,
         "rate_limit": 0,
@@ -78,13 +78,13 @@
         "pre_delay": 0,
         "action": "Click",
         "post_wait_freezes": {
+            "time": 300,
             "target": [
                 0,
                 644,
                 135,
                 32
-            ],
-            "time": 300
+            ]
         },
         "post_delay": 0,
         "rate_limit": 0,
@@ -116,13 +116,13 @@
         "pre_delay": 0,
         "action": "Click",
         "post_wait_freezes": {
+            "time": 200,
             "target": [
                 -300,
                 -150,
                 300,
                 150
-            ],
-            "time": 200
+            ]
         },
         "post_delay": 0,
         "rate_limit": 0,
@@ -150,13 +150,13 @@
         },
         // 因切换装备不需要等待加载，且不好判断上一个装备动画是否完成淡出，因此使用post_wait_freezes等待动画完成
         "post_wait_freezes": {
+            "time": 300,
             "target": [
                 -300,
                 -150,
                 300,
                 150
-            ],
-            "time": 300
+            ]
         },
         "post_delay": 0,
         "rate_limit": 0,
@@ -191,13 +191,13 @@
             "param": {}
         },
         "post_wait_freezes": {
+            "time": 200,
             "target": [
                 -300,
                 -150,
                 300,
                 150
-            ],
-            "time": 200
+            ]
         },
         "post_delay": 0,
         "rate_limit": 0
@@ -222,13 +222,13 @@
             }
         },
         "pre_wait_freezes": {
+            "time": 80,
             "target": [
                 -300,
                 -150,
                 300,
                 150
-            ],
-            "time": 80
+            ]
         },
         "pre_delay": 0,
         "action": {
@@ -268,35 +268,28 @@
             "Node.Action.Succeeded": "背包已满"
         }
     },
-    "GearAssemblyCheckIfReachedScrollEnd": {
-        "desc": "检查是否滑动到底部",
-        "recognition": {
-            "type": "ColorMatch",
-            "param": {
-                "roi": [
-                    445,
-                    615,
-                    15,
-                    20
-                ],
-                "lower": [
-                    220,
-                    220,
-                    220
-                ],
-                "upper": [
-                    255,
-                    255,
-                    255
-                ]
-            }
+    "GearAssemblyGearListScrollEnd": {
+        "desc": "装备列表已到底：ListComplete 命中表示无法继续下滑。滑动后须 post_wait_freezes 静止再识别",
+        "recognition": "Custom",
+        "custom_recognition": "ListCompleteRecognition",
+        "custom_recognition_param": {
+            "threshold": 0.98
         },
+        "roi": [
+            35,
+            100,
+            400,
+            520
+        ],
         "pre_delay": 0,
         "post_delay": 0,
         "rate_limit": 0,
         "next": [
             "GearAssemblyCheckFailedAndFinish"
-        ]
+        ],
+        "attach": {
+            "ready": false
+        }
     },
     "GearAssemblySwipeToNextRow": {
         "desc": "滑动到下一行",
@@ -327,12 +320,12 @@
             }
         },
         "post_wait_freezes": {
-            "time": 80,
+            "time": 200,
             "target": [
-                0,
-                0,
+                35,
+                100,
                 400,
-                200
+                520
             ]
         },
         "post_delay": 0,
@@ -403,19 +396,19 @@
         },
         // 因切换装备不需要等待加载，且不好判断上一个装备动画是否完成淡出，因此使用post_wait_freezes等待动画完成
         "post_wait_freezes": {
+            "time": 300,
             "target": [
                 -300,
                 -150,
                 300,
                 150
-            ],
-            "time": 300
+            ]
         },
         "post_delay": 0,
         "rate_limit": 0,
         "next": [
             "GearAssemblyClickProduceBtn",
-            "GearAssemblyCheckIfReachedScrollEnd",
+            "GearAssemblyGearListScrollEnd",
             "GearAssemblySwipeToNextRow"
         ]
     },
@@ -454,7 +447,7 @@
         "post_delay": 0,
         "rate_limit": 0,
         "next": [
-            "GearAssemblyCheckIfReachedScrollEnd",
+            "GearAssemblyGearListScrollEnd",
             "GearAssemblySwipeToNextRow"
         ],
         "focus": {

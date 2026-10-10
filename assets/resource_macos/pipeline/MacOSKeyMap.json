@@ -2,22 +2,6 @@
 // DO NOT EDIT MANUALLY.
 // Temporary compatibility layer until MaaFramework MacOS supports use_win32_vk_code.
 {
-    "AltClickControlNexusButtonKeyDown": {
-        "action": {
-            "type": "KeyDown",
-            "param": {
-                "key": 58
-            }
-        }
-    },
-    "AltClickControlNexusButtonKeyUp": {
-        "action": {
-            "type": "KeyUp",
-            "param": {
-                "key": 58
-            }
-        }
-    },
     "AltClickProtosyncMenuButtonKeyDown": {
         "action": {
             "type": "KeyDown",
@@ -58,6 +42,22 @@
             }
         }
     },
+    "AutoCollectDigSpace": {
+        "action": {
+            "type": "ClickKey",
+            "param": {
+                "key": 49
+            }
+        }
+    },
+    "AutoEssenceCapacityCloseValuables": {
+        "action": {
+            "type": "ClickKey",
+            "param": {
+                "key": 53
+            }
+        }
+    },
     "AutoPickFalls": {
         "action": {
             "type": "ClickKey",
@@ -67,6 +67,14 @@
         }
     },
     "AutoPickInteractive": {
+        "action": {
+            "type": "ClickKey",
+            "param": {
+                "key": 3
+            }
+        }
+    },
+    "AutoSellPressStockRedistribution": {
         "action": {
             "type": "ClickKey",
             "param": {
@@ -99,6 +107,14 @@
         }
     },
     "GiftOperatorBack": {
+        "action": {
+            "type": "ClickKey",
+            "param": {
+                "key": 1
+            }
+        }
+    },
+    "GiftOperatorMoveBackward": {
         "action": {
             "type": "ClickKey",
             "param": {
@@ -178,22 +194,6 @@
             }
         }
     },
-    "MapNavigatorZiplineMount": {
-        "action": {
-            "type": "ClickKey",
-            "param": {
-                "key": 3
-            }
-        }
-    },
-    "MapTrackerOpenWorld_GetOffZipline": {
-        "action": {
-            "type": "ClickKey",
-            "param": {
-                "key": 53
-            }
-        }
-    },
     "ProdManualOpenInMain": {
         "action": {
             "type": "KeyDown",
@@ -207,6 +207,22 @@
             "type": "KeyUp",
             "param": {
                 "key": 58
+            }
+        }
+    },
+    "ProtocolSpaceTouchExitTouch": {
+        "action": {
+            "type": "ClickKey",
+            "param": {
+                "key": 3
+            }
+        }
+    },
+    "ProtocolSpaceTouchExitTouchRetry": {
+        "action": {
+            "type": "ClickKey",
+            "param": {
+                "key": 3
             }
         }
     },
@@ -239,6 +255,30 @@
             "type": "ClickKey",
             "param": {
                 "key": 53
+            }
+        }
+    },
+    "SharedZiplineDeleteDismissNoMapMind": {
+        "action": {
+            "type": "ClickKey",
+            "param": {
+                "key": 53
+            }
+        }
+    },
+    "StashBackpackUsableItemsLimitedDrag": {
+        "action": {
+            "type": "KeyDown",
+            "param": {
+                "key": 56
+            }
+        }
+    },
+    "StashBackpackUsableItemsLimitedQuickMoveKeyUp": {
+        "action": {
+            "type": "KeyUp",
+            "param": {
+                "key": 56
             }
         }
     },
@@ -767,22 +807,6 @@
         }
     },
     "__MapNavigatorObstacleDevice_InteractPre": {
-        "action": {
-            "type": "KeyDown",
-            "param": {
-                "key": 58
-            }
-        }
-    },
-    "__MapTrackerOpenWorld_GetOnZipline_InteractPost": {
-        "action": {
-            "type": "KeyUp",
-            "param": {
-                "key": 58
-            }
-        }
-    },
-    "__MapTrackerOpenWorld_GetOnZipline_InteractPre": {
         "action": {
             "type": "KeyDown",
             "param": {

@@ -23,6 +23,7 @@ struct CellRecognitionDiagnostics
     std::optional<double> top2_margin;
     std::size_t candidate_count = 0;
     bool fallback_used = false;
+    bool region_unavailable_fallback_used = false;
     cv::Point2d best_phase;
     std::optional<std::string> rejected_reason;
     std::optional<double> foreground_texture;
@@ -35,6 +36,8 @@ struct CellRecognitionDiagnostics
     std::optional<double> edge_occlusion_residual_ratio;
     std::optional<int> row;
     std::optional<int> column;
+    // 前置判空未运行匹配及稀有度分类，默认占位值不能作为观测结果导出。
+    bool template_matching_skipped = false;
 
     json::value to_json() const;
 };

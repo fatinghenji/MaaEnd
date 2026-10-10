@@ -2,6 +2,7 @@ package matchapi
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -125,7 +126,7 @@ func (e *Engine) MatchOCR(ocr OCRInput, opts EssenceFilterOptions) (*MatchResult
 	// 1) Exact matching on (slot1,slot2,slot3) skill IDs.
 	ocrSkills := [3]string{ocr.Skills[0], ocr.Skills[1], ocr.Skills[2]}
 	ocrLevels := [3]int{ocr.Levels[0], ocr.Levels[1], ocr.Levels[2]}
-	ocrSkills, ocrLevels = e.reorderByPoolAssignmentIfPossible(ocrSkills, ocrLevels)
+	ocrSkills, ocrLevels, hasDistinctSkillPools := e.reorderByPoolAssignmentIfPossible(ocrSkills, ocrLevels)
 
 	// If no rarity is selected, exact matching must be disabled.
 	var exact *SkillCombinationMatch
@@ -149,7 +150,7 @@ func (e *Engine) MatchOCR(ocr OCRInput, opts EssenceFilterOptions) (*MatchResult
 	// 2) Extension rules: evaluate both first, then OR lock decision.
 	futureMatched := false
 	futureMinTotal := 0
-	if opts.KeepFuturePromising && opts.FuturePromisingMinTotal > 0 {
+	if opts.KeepFuturePromising && opts.FuturePromisingMinTotal > 0 && hasDistinctSkillPools {
 		if e.matchFuturePromising(ocrSkills, ocrLevels, opts.FuturePromisingMinTotal) {
 			futureMatched = true
 			futureMinTotal = opts.FuturePromisingMinTotal
@@ -253,12 +254,53 @@ func (e *Engine) MatchOCR(ocr OCRInput, opts EssenceFilterOptions) (*MatchResult
 	}, nil
 }
 
+// MatchInventoryOCR matches against all supported four- to six-star weapons.
+// A resolved but incompatible essence returns (nil, nil); unresolved skills or
+// invalid levels return an error. No filtering or lock/discard rules are applied.
+func (e *Engine) MatchInventoryOCR(ocr OCRInput) (*InventoryMatch, error) {
+	e.ensureSlotIndices()
+	var result InventoryMatch
+	var used [3]bool
+	for i, text := range ocr.Skills {
+		slot, ok := e.assignSlotForOCRText(text)
+		if !ok {
+			return nil, fmt.Errorf("cannot resolve skill at position %d: %q", i+1, text)
+		}
+		id, _ := e.matchSkillIDEnhanced(slot, text)
+		maxLevel := 6
+		if slot == 3 {
+			maxLevel = 3
+		}
+		if ocr.Levels[i] < 1 || ocr.Levels[i] > maxLevel {
+			return nil, fmt.Errorf("invalid level %d for skill pool %d", ocr.Levels[i], slot)
+		}
+		used[slot-1] = true
+		result.SkillIDs[slot-1] = id
+		result.Levels[slot-1] = ocr.Levels[i]
+	}
+	// Multiple skills from the same pool are valid inventory, but cannot match
+	// a weapon's three distinct pools. Validate every skill before skipping them.
+	if used != [3]bool{true, true, true} {
+		return nil, nil
+	}
+	targets := e.BuildTargets(EssenceFilterOptions{
+		Rarity4Weapon: true, Rarity5Weapon: true, Rarity6Weapon: true,
+	})
+	match, ok := matchSkillIDs(result.SkillIDs, targets)
+	if !ok {
+		return nil, nil
+	}
+	result.Weapons = match.Weapons
+	return &result, nil
+}
+
 // reorderByPoolAssignmentIfPossible reorders OCR skills/levels into slot1/2/3 order
-// by inferring which slot-pool each OCR skill belongs to.
+// by inferring which slot-pool each OCR skill belongs to. The third return reports
+// whether the skills map uniquely to all three pools.
 //
 // If the inference is not unique (e.g. ambiguous match or duplicate slot assignment),
 // it falls back to the original input order.
-func (e *Engine) reorderByPoolAssignmentIfPossible(inSkills [3]string, inLevels [3]int) ([3]string, [3]int) {
+func (e *Engine) reorderByPoolAssignmentIfPossible(inSkills [3]string, inLevels [3]int) ([3]string, [3]int, bool) {
 	// Default: keep input order.
 	outSkills := inSkills
 	outLevels := inLevels
@@ -271,18 +313,18 @@ func (e *Engine) reorderByPoolAssignmentIfPossible(inSkills [3]string, inLevels 
 	for i := 0; i < 3; i++ {
 		slot, ok := e.assignSlotForOCRText(inSkills[i])
 		if !ok {
-			return outSkills, outLevels
+			return outSkills, outLevels, false
 		}
 		if used[slot] {
 			// Duplicate pool assignment (e.g. 2x slot1 + 1x slot2) => keep default order.
-			return outSkills, outLevels
+			return outSkills, outLevels, false
 		}
 		used[slot] = true
 		assignedSlots[i] = slot
 	}
 
 	if !used[1] || !used[2] || !used[3] {
-		return outSkills, outLevels
+		return outSkills, outLevels, false
 	}
 
 	// Build ordered arrays: [slot1, slot2, slot3].
@@ -294,7 +336,7 @@ func (e *Engine) reorderByPoolAssignmentIfPossible(inSkills [3]string, inLevels 
 		skillsOrdered[orderedIdx] = inSkills[i]
 		levelsOrdered[orderedIdx] = inLevels[i]
 	}
-	return skillsOrdered, levelsOrdered
+	return skillsOrdered, levelsOrdered, true
 }
 
 // assignSlotForOCRText returns which slot pool the given OCR skill text belongs to.

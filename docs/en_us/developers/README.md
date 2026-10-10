@@ -82,7 +82,6 @@ Consult as needed. Only required when using the corresponding component.
 | [BetterSliding](./components/better-sliding.md) | Common custom action for adjusting discrete quantity sliders by target value |
 | [RecoGrid / GridTracker / EssenceGrid](./components/recogrid-engine.md) | Layered single-frame recognition, cross-frame tracking, and Essence business integration |
 | [MapLocator](./components/map-locator.md) | AI + CV based minimap positioning system, outputs region, coordinates, and orientation |
-| [MapTracker](./components/map-tracker.md) | Computer vision based minimap tracking and path movement |
 | [MapNavigator](./components/map-navigator.md) | Path navigation Action, supports record-free target-based pathfinding and GUI recording |
 | [WorldMap](./components/world-map.md) | World map coordinate recognition, confirms the icon at a base map coordinate and hands back its screen position |
 | [IMS (Item Management System)](./components/ims.md) | Cultivation-item cache: A2 sync / A1 delta / A3 add, R1 quantity gate / R2 readiness gate |
@@ -98,7 +97,8 @@ Only required when maintaining the corresponding task.
 | [DijiangRewards](./tasks/dijiang-rewards-maintain.md) | Main flow, stage responsibilities, and interface option override logic |
 | [CreditShopping](./tasks/credit-shopping-maintain.md) | Purchase priority, credit linkage, refresh strategy, and product extension |
 | [EnvironmentMonitoring](./tasks/environment-monitoring-maintain.md) | Observation point route data, `pipeline-generate` automatic generation and new point integration process |
-| [SellProduct](./tasks/sell-product-maintain.md) | Main flow, zmdmap compact game data sync, automatic operators, and dynamic selling-loop maintenance |
+| [OutpostTrading](./tasks/outpost-trading-maintain.md) | Main flow, zmdmap compact game data sync, automatic operators, and dynamic selling-loop maintenance |
+| [SeizeDeliveryJobs](./tasks/seize-delivery-jobs-maintain.md) | Data-driven endpoint generation, landmark-name maintenance, fallback text, and locale synchronization |
 | [GiftOperator](./tasks/gift-operator-maintain.md) | Navigation pathfinding, contact operator selection, gift giving/receiving branches, and operator extension maintenance |
 
 ### Third-Party Protocol Documents (`protocol/`)

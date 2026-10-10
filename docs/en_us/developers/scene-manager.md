@@ -75,11 +75,78 @@ These node names **do not start with `__ScenePrivate`**.
 | Menu | `SceneEnterMenuIntelArchiveAudioRecords` | Enter Intel Archives - Audio Records. |
 | Menu | `SceneEnterMenuIntelArchiveFindings` | Enter Intel Archives - Findings. |
 | Menu | `SceneEnterMenuIntelArchiveNexusFiles` | Enter Intel Archives - Nexus Files. |
+| Menu | `SceneEnterMenuSetting` | Enter Settings (PC only). |
+| Menu | `SceneEnterMenuSettingPerformanceGraphic` | Enter Settings - Performance & Graphics (PC only). |
+| Menu | `SceneEnterMenuSettingAudio` | Enter Settings - Audio (PC only). |
+| Menu | `SceneEnterMenuSettingControls` | Enter Settings - Controls (PC only). |
+| Menu | `SceneEnterMenuSettingKeybinding` | Enter Settings - Keybinding (PC only). |
+| Menu | `SceneEnterMenuSettingLanguage` | Enter Settings - Language (PC only). |
+| Menu | `SceneEnterMenuSettingPlatformAccount` | Enter Settings - Platform & Account (PC only). |
+| Menu | `SceneEnterMenuSettingOthers` | Enter Settings - Others (PC only). |
 | Menu | `SceneEnterMenuHeadhunt` | Enter Operator Headhunt screen. |
 | Helper | `SceneDialogConfirm` | Click confirm button in dialogs. |
 | Helper | `SceneDialogCancel` | Click cancel button in dialogs. |
 | Helper | `SceneNoticeRewardsConfirm` | Click confirm button on rewards screens. |
+| Helper | `SceneNoticeRewardsUpgrade` | Close the Authority Level-up overlay by clicking the blank area. |
 | Helper | `SceneWaitLoadingExit` | Wait for loading screen to disappear. |
+
+## Dijiang Depot Interfaces
+
+The Dijiang Depot public Pipeline provides depot screen recognition, navigation, region switching, and item category selection.
+
+### Base and Region Interfaces
+
+| Target State | Navigation Interface | Validation Interface |
+| ------------------ | ----------------------------------------------- | ------------------------------ |
+| Any supported region | `SceneEnterMenuBackpackWithDepot` | `InDijiangDepot` |
+| Valley IV | `SceneEnterMenuBackpackWithDepotValleyIV` | `InDijiangDepotValleyIV` |
+| Wuling | `SceneEnterMenuBackpackWithDepotWuling` | `InDijiangDepotWuling` |
+
+### Item Categories
+
+The region-independent category interfaces enter the Dijiang Depot from any screen and select the target category without changing the region active after entering the depot.
+
+#### Region-Independent Categories
+
+| Category | Navigation Interface | Validation Interface |
+| ---------------- | ---------------------------------------------------- | -------------------------------- |
+| All | `SceneEnterMenuBackpackWithDepotAll` | `InDijiangDepotAll` |
+| Ore | `SceneEnterMenuBackpackWithDepotOre` | `InDijiangDepotOre` |
+| Plant | `SceneEnterMenuBackpackWithDepotPlant` | `InDijiangDepotPlant` |
+| Product | `SceneEnterMenuBackpackWithDepotProduct` | `InDijiangDepotProduct` |
+| Doodad | `SceneEnterMenuBackpackWithDepotDoodad` | `InDijiangDepotDoodad` |
+| Nurturance | `SceneEnterMenuBackpackWithDepotNurturance` | `InDijiangDepotNurturance` |
+| Usable | `SceneEnterMenuBackpackWithDepotUsable` | `InDijiangDepotUsable` |
+| Producer | `SceneEnterMenuBackpackWithDepotProducer` | `InDijiangDepotProducer` |
+| Portable Device | `SceneEnterMenuBackpackWithDepotPortableDevice` | `InDijiangDepotPortableDevice` |
+
+#### Valley IV
+
+| Category | Navigation Interface | Validation Interface |
+| ---------------- | ---------------------------------------------------------- | ------------------------------------------- |
+| All | `SceneEnterMenuBackpackWithDepotValleyIVAll` | `InDijiangDepotValleyIVAll` |
+| Ore | `SceneEnterMenuBackpackWithDepotValleyIVOre` | `InDijiangDepotValleyIVOre` |
+| Plant | `SceneEnterMenuBackpackWithDepotValleyIVPlant` | `InDijiangDepotValleyIVPlant` |
+| Product | `SceneEnterMenuBackpackWithDepotValleyIVProduct` | `InDijiangDepotValleyIVProduct` |
+| Doodad | `SceneEnterMenuBackpackWithDepotValleyIVDoodad` | `InDijiangDepotValleyIVDoodad` |
+| Nurturance | `SceneEnterMenuBackpackWithDepotValleyIVNurturance` | `InDijiangDepotValleyIVNurturance` |
+| Usable | `SceneEnterMenuBackpackWithDepotValleyIVUsable` | `InDijiangDepotValleyIVUsable` |
+| Producer | `SceneEnterMenuBackpackWithDepotValleyIVProducer` | `InDijiangDepotValleyIVProducer` |
+| Portable Device | `SceneEnterMenuBackpackWithDepotValleyIVPortableDevice` | `InDijiangDepotValleyIVPortableDevice` |
+
+#### Wuling
+
+| Category | Navigation Interface | Validation Interface |
+| ---------------- | -------------------------------------------------------- | ----------------------------------------- |
+| All | `SceneEnterMenuBackpackWithDepotWulingAll` | `InDijiangDepotWulingAll` |
+| Ore | `SceneEnterMenuBackpackWithDepotWulingOre` | `InDijiangDepotWulingOre` |
+| Plant | `SceneEnterMenuBackpackWithDepotWulingPlant` | `InDijiangDepotWulingPlant` |
+| Product | `SceneEnterMenuBackpackWithDepotWulingProduct` | `InDijiangDepotWulingProduct` |
+| Doodad | `SceneEnterMenuBackpackWithDepotWulingDoodad` | `InDijiangDepotWulingDoodad` |
+| Nurturance | `SceneEnterMenuBackpackWithDepotWulingNurturance` | `InDijiangDepotWulingNurturance` |
+| Usable | `SceneEnterMenuBackpackWithDepotWulingUsable` | `InDijiangDepotWulingUsable` |
+| Producer | `SceneEnterMenuBackpackWithDepotWulingProducer` | `InDijiangDepotWulingProducer` |
+| Portable Device | `SceneEnterMenuBackpackWithDepotWulingPortableDevice` | `InDijiangDepotWulingPortableDevice` |
 
 ## Protocol Teleport Point Interfaces
 

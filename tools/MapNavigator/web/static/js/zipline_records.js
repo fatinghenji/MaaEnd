@@ -1,0 +1,227 @@
+/** Project record/Ziplines.json marks into MapNavigator base-map coordinates. */
+
+function finiteNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function matchingFrame(config, zoneName) {
+  const wanted = String(zoneName || "").toLowerCase();
+  return (config && Array.isArray(config.frames) ? config.frames : []).find(
+    (frame) => String(frame && frame.zone_name).toLowerCase() === wanted,
+  );
+}
+
+/**
+ * Unique pseudonymous accounts ordered by their latest import time.
+ * @param {Object} records parsed record/Ziplines.json
+ * @returns {Array<{accountId:string,fetchedAt:string}>}
+ */
+export function listZiplineAccounts(records) {
+  const accounts = new Map();
+  for (const map of records && Array.isArray(records.maps) ? records.maps : []) {
+    const accountId = String((map && map.account_id) || "");
+    if (!accountId) continue;
+    const fetchedAt = String((map && map.fetched_at) || "");
+    const previous = accounts.get(accountId);
+    if (!previous || fetchedAt > previous.fetchedAt) accounts.set(accountId, {accountId, fetchedAt});
+  }
+  return [...accounts.values()].sort(
+    (left, right) => right.fetchedAt.localeCompare(left.fetchedAt) || left.accountId.localeCompare(right.accountId),
+  );
+}
+
+/** Latest imported pseudonymous account for offline map inspection. @param {Object} records @returns {string} */
+export function latestZiplineAccountId(records) {
+  return listZiplineAccounts(records)[0]?.accountId || "";
+}
+
+/** Compact account label suitable for the planning dropdown. */
+export function ziplineAccountLabel(account) {
+  const accountId = String((account && account.accountId) || "");
+  const shortId = accountId.length > 10 ? `${accountId.slice(0, 6)}…${accountId.slice(-4)}` : accountId;
+  const fetchedAt = String((account && account.fetchedAt) || "");
+  const importedDate = /^\d{4}-\d{2}-\d{2}/.exec(fetchedAt)?.[0] || "";
+  return `账号 ${shortId}${importedDate ? ` · ${importedDate}` : ""}`;
+}
+
+/**
+ * Apply the same world→base calibration as ZiplineFrame::project. This intentionally
+ * does not reproduce power, reachability, floor, connectivity, or cost planning.
+ * @param {Object} records parsed record/Ziplines.json
+ * @param {Object} frameConfig parsed zipline_frames.json
+ * @param {string} zoneName geometry/base zone name such as map02base
+ * @param {string} accountId pseudonymous account selected by the matching runtime log
+ * @returns {Array<Object>}
+ */
+export function projectZiplineRecords(records, frameConfig, zoneName, accountId = "") {
+  const frame = matchingFrame(frameConfig, zoneName);
+  if (!frame || !Array.isArray(frame.plane) || frame.plane.length !== 6) return [];
+  const plane = frame.plane.map(finiteNumber);
+  const heightScale = finiteNumber(frame.height_scale);
+  const heightOffset = finiteNumber(frame.height_offset);
+  if (plane.some((value) => value === null) || heightScale === null || heightOffset === null) return [];
+  const accepted = new Set(Array.isArray(frame.template_ids) ? frame.template_ids.map(String) : []);
+
+  const maps = records && Array.isArray(records.maps) ? records.maps : [];
+  const wantedAccount = String(accountId || "");
+  // 旧日志配旧快照时仍可显示旧格式；新快照已有账号维度而日志没有账号时宁可不画，
+  // 也不能把多个账号的候选混在同一张图上。
+  const hasScopedRecords = maps.some((map) => String((map && map.account_id) || ""));
+  if (!wantedAccount && hasScopedRecords) return [];
+
+  const result = [];
+  let recordIndex = 0;
+  for (const map of maps) {
+    const recordAccount = String((map && map.account_id) || "");
+    if (wantedAccount && recordAccount !== wantedAccount) continue;
+    const mapId = String((map && map.map_id) || "");
+    if (frame.map_id && mapId !== String(frame.map_id)) continue;
+    for (const mark of map && Array.isArray(map.marks) ? map.marks : []) {
+      const templateId = String((mark && mark.template_id) || "");
+      if (accepted.size && !accepted.has(templateId)) continue;
+      const worldX = finiteNumber(mark && mark.x);
+      const worldY = finiteNumber(mark && mark.y);
+      const worldZ = finiteNumber(mark && mark.z);
+      if ([worldX, worldY, worldZ].some((value) => value === null)) continue;
+      result.push({
+        measureKey: `record:${recordIndex}`,
+        point: [
+          plane[0] * worldX + plane[1] * worldZ + plane[2],
+          plane[3] * worldX + plane[4] * worldZ + plane[5],
+        ],
+        height: heightScale * worldY + heightOffset,
+        world: [worldX, worldY, worldZ],
+        mapId,
+        levelId: String(mark.level_id || ""),
+        templateId,
+      });
+      recordIndex += 1;
+    }
+  }
+  return result;
+}
+
+function ziplineType(frameConfig, templateId) {
+  return (frameConfig && Array.isArray(frameConfig.types) ? frameConfig.types : []).find(
+    (type) => String(type && type.template_id) === String(templateId || ""),
+  );
+}
+
+function typeFootprint(type) {
+  if (!type || !Array.isArray(type.footprint)) {
+    return [
+      1,
+      1,
+    ];
+  }
+  if (
+    type.footprint.length !== 2 ||
+    type.footprint.some((value) => !Number.isInteger(Number(value)) || Number(value) <= 0 || Number(value) % 2 === 0)
+  ) {
+    return null;
+  }
+  return type.footprint.map(Number);
+}
+
+/**
+ * Reproduce only the runtime's tower-to-tower geometric span check. Power,
+ * reachability, floor snapping, banned edges, and route cost remain runtime-only.
+ * @param {Object} lhs
+ * @param {Object} rhs
+ * @param {Object} frameConfig parsed zipline_frames.json
+ * @returns {Object}
+ */
+export function measureZiplinePair(lhs, rhs, frameConfig) {
+  const lhsPoint = lhs && Array.isArray(lhs.point) ? lhs.point : [];
+  const rhsPoint = rhs && Array.isArray(rhs.point) ? rhs.point : [];
+  const baseDistance =
+    lhsPoint.length >= 2 && rhsPoint.length >= 2
+      ? Math.hypot(Number(rhsPoint[0]) - Number(lhsPoint[0]), Number(rhsPoint[1]) - Number(lhsPoint[1]))
+      : null;
+  const lhsWorld = lhs && Array.isArray(lhs.world) ? lhs.world.map(Number) : [];
+  const rhsWorld = rhs && Array.isArray(rhs.world) ? rhs.world.map(Number) : [];
+  const hasWorld =
+    lhsWorld.length >= 3 &&
+    rhsWorld.length >= 3 &&
+    lhsWorld.slice(0, 3).every(Number.isFinite) &&
+    rhsWorld.slice(0, 3).every(Number.isFinite);
+  const dx = hasWorld ? rhsWorld[0] - lhsWorld[0] : null;
+  const dy = hasWorld ? rhsWorld[1] - lhsWorld[1] : null;
+  const dz = hasWorld ? rhsWorld[2] - lhsWorld[2] : null;
+  const worldDistance = hasWorld ? Math.sqrt(dx * dx + dy * dy + dz * dz) : null;
+  const horizontalDistance = hasWorld ? Math.hypot(dx, dz) : null;
+  const heightDelta = hasWorld ? Math.abs(dy) : null;
+
+  const sameTemplate = String((lhs && lhs.templateId) || "") === String((rhs && rhs.templateId) || "");
+  const sameLevel = String((lhs && lhs.levelId) || "") === String((rhs && rhs.levelId) || "");
+  const lhsType = ziplineType(frameConfig, lhs && lhs.templateId);
+  const rhsType = ziplineType(frameConfig, rhs && rhs.templateId);
+  const type = sameTemplate ? lhsType : null;
+  const maxSpan = type ? finiteNumber(type.max_span) : null;
+  const lhsFootprint = typeFootprint(lhsType);
+  const rhsFootprint = typeFootprint(rhsType);
+  const footprint = lhsFootprint && rhsFootprint;
+  const uncertaintyX = footprint ? (lhsFootprint[0] + rhsFootprint[0] - 2) / 2 : null;
+  const uncertaintyZ = footprint ? (lhsFootprint[1] + rhsFootprint[1] - 2) / 2 : null;
+  const minimumDeltaX = hasWorld && uncertaintyX !== null ? Math.max(Math.abs(dx) - uncertaintyX, 0) : null;
+  const maximumDeltaX = hasWorld && uncertaintyX !== null ? Math.abs(dx) + uncertaintyX : null;
+  const minimumDeltaZ = hasWorld && uncertaintyZ !== null ? Math.max(Math.abs(dz) - uncertaintyZ, 0) : null;
+  const maximumDeltaZ = hasWorld && uncertaintyZ !== null ? Math.abs(dz) + uncertaintyZ : null;
+  const minimumWorldDistance = hasWorld && footprint ? Math.hypot(minimumDeltaX, dy, minimumDeltaZ) : null;
+  const maximumWorldDistance = hasWorld && footprint ? Math.hypot(maximumDeltaX, dy, maximumDeltaZ) : null;
+  const minimumHorizontalDistance = hasWorld && footprint ? Math.hypot(minimumDeltaX, minimumDeltaZ) : null;
+  const maximumHorizontalDistance = hasWorld && footprint ? Math.hypot(maximumDeltaX, maximumDeltaZ) : null;
+  let geometryConnected = null;
+  let geometryReason = "缺少世界坐标，无法判断几何连接";
+  if (hasWorld && !sameTemplate) {
+    geometryConnected = false;
+    geometryReason = "滑索架类型不同";
+  } else if (hasWorld && !sameLevel) {
+    geometryConnected = false;
+    geometryReason = "滑索架不在同一 level";
+  } else if (hasWorld && !(maxSpan > 0)) {
+    geometryConnected = false;
+    geometryReason = "该滑索架类型没有有效跨度配置";
+  } else if (hasWorld && !footprint) {
+    geometryConnected = false;
+    geometryReason = "该滑索架类型没有有效占地配置";
+  } else if (hasWorld) {
+    geometryConnected = minimumWorldDistance <= maxSpan;
+    geometryReason = geometryConnected
+      ? `最小可能跨度 ${minimumWorldDistance.toFixed(2)} m 不超过 ${maxSpan.toFixed(2)} m 上限`
+      : `最小可能跨度 ${minimumWorldDistance.toFixed(2)} m 超出 ${maxSpan.toFixed(2)} m 上限`;
+  }
+
+  return {
+    baseDistance: Number.isFinite(baseDistance) ? baseDistance : null,
+    worldDistance,
+    horizontalDistance,
+    heightDelta,
+    minimumWorldDistance,
+    maximumWorldDistance,
+    minimumHorizontalDistance,
+    maximumHorizontalDistance,
+    uncertaintyX,
+    uncertaintyZ,
+    deltaX: dx,
+    deltaY: dy,
+    deltaZ: dz,
+    sameTemplate,
+    sameLevel,
+    typeName: type ? String(type.name || "") : "",
+    maxSpan,
+    geometryConnected,
+    geometryReason,
+  };
+}
+
+/** Two-click selection state: first click sets A, second sets B, the next starts over. */
+export function nextZiplineMeasurementSelection(current, measureKey) {
+  const selection = Array.isArray(current) ? current.filter((key) => typeof key === "string") : [];
+  const key = String(measureKey || "");
+  if (!key) return selection.slice(0, 2);
+  if (selection.length === 1 && selection[0] === key) return [];
+  if (selection.length >= 2) return [key];
+  return [...selection, key];
+}

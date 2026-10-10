@@ -27,17 +27,24 @@
                         141.39
                     ]
                 },
-                [
-                    185.9,
-                    129.5,
-                    true
-                ]
+                {
+                    "action": "INTERACT",
+                    "target": [
+                        185.9,
+                        130
+                    ],
+                    "interact_text": [
+                        "物资调度终端",
+                        "物資調度終端"
+                    ],
+                    "interact_rec": true
+                }
             ]
         },
         "post_delay": 0,
         "rate_limit": 0,
         "next": [
-            "AutoSellEnterStockRedistribution"
+            "AutoSellPressStockRedistribution"
         ],
         "focus": {
             "Node.Action.Starting": "正在走向物资调度终端",
@@ -49,30 +56,29 @@
             }
         }
     },
-    "AutoSellEnterStockRedistribution": {
-        "desc": "进入物资调度页面",
-        "recognition": "TemplateMatch",
+    "AutoSellPressStockRedistribution": {
+        "desc": "寻路只确认交互提示，由本节点按交互键打开物资调度终端",
+        "recognition": "OCR",
         "roi": [
-            -600,
-            -350,
-            600,
-            350
+            755,
+            330,
+            297,
+            312
         ],
-        "template": "AutoSell/StockRedistributionButton.png",
-        "threshold": 0.9,
-        "pre_wait_freezes": 100,
+        "expected": [
+            "物资调度终端",
+            "物資調度終端"
+        ],
         "pre_delay": 0,
-        "action": "Custom",
-        "custom_action": "AutoAltClickAction",
+        "action": "ClickKey",
+        "key": 70, // F 交互；可通过全局设置 KeymapInteract 改绑
         "post_delay": 0,
         "rate_limit": 0,
         "next": [
             "AutoSellEnterStockRedistributionSuccess"
         ],
         "focus": {
-            "Node.Recognition.Succeeded": {
-                "trace": true
-            }
+            "Node.PipelineNode.Failed": "$task.Keymap.focus.interact_failed"
         }
     },
     "AutoSellEnterStockRedistributionSuccess": {

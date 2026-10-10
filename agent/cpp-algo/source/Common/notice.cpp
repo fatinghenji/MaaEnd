@@ -3,8 +3,6 @@
 #include <cctype>
 #include <cstdlib>
 #include <filesystem>
-#include <fstream>
-#include <sstream>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -13,6 +11,7 @@
 #include <meojson/json.hpp>
 
 #include "../utils.h"
+#include "JsoncFile.h"
 
 namespace common::notice
 {
@@ -55,15 +54,8 @@ std::string ResolveLanguage()
 bool LoadInto(const std::filesystem::path& dir, const std::string& lang, std::unordered_map<std::string, std::string>& out)
 {
     const std::filesystem::path path = dir / (lang + ".json");
-    std::ifstream file(path);
-    if (!file.is_open()) {
-        LogWarn << "Notice locale file not found." << VAR(path);
-        return false;
-    }
-
-    std::ostringstream text;
-    text << file.rdbuf();
-    const auto parsed = json::parse(text.str());
+    // 仓库内 JSONC 允许注释、尾逗号与 BOM，用公共 OpenJsoncFile 读取。
+    const auto parsed = common::OpenJsoncFile(path);
     if (!parsed || !parsed->is_object()) {
         LogWarn << "Failed to parse notice locale file." << VAR(path);
         return false;
@@ -81,8 +73,8 @@ const std::unordered_map<std::string, std::string>& Messages()
 {
     static const std::unordered_map<std::string, std::string> messages = [] {
         std::unordered_map<std::string, std::string> loaded;
-        // 装在 assets/locales 下，安装后落到包根的 locales/，所以从 exe 往上一级找。
-        const std::filesystem::path dir = get_exe_dir() / ".." / kLocaleRelativeDir;
+        // 装在 assets/locales 下，安装后落到包根的 locales/，所以从安装根找。
+        const std::filesystem::path dir = get_install_dir() / kLocaleRelativeDir;
         const std::string lang = ResolveLanguage();
         // 先铺默认语言再覆盖目标语言，新加的 key 还没翻译时不至于变成裸 key。
         LoadInto(dir, kDefaultLang, loaded);

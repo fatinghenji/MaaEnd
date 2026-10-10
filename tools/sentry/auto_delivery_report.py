@@ -1,8 +1,9 @@
 """根据 Sentry spans 生成自动送货任务分析报告。
 
-默认分析 beta 环境最近 24 小时的 DeliveryJobs 与 SeizeDeliveryJobs。报告分别展示
-导航阶段失败率、失败节点分布和路线内部错误率。路线内部错误可能已被上层重试恢复，
-因此不等同于整次自动送货任务失败。
+默认分析 Sentry 最新发布的 MaaEnd release 最近 24 小时的 DeliveryJobs 与
+SeizeDeliveryJobs。报告分别展示导航阶段失败率、失败节点分布和路线内部失败率，
+并在同一条逻辑路线中对比开启和关闭滑索的失败率。路线内部失败可能已被上层
+重试恢复，因此不等同于整次自动送货任务失败。
 """
 
 from __future__ import annotations
@@ -22,6 +23,8 @@ try:
         DEFAULT_SENTRY_TIMEOUT_SECONDS,
         explore,
         format_rate,
+        normalize_sentry_environment,
+        resolve_latest_maaend_release,
         resolve_sentry_command,
         show_progress,
         write_console_table,
@@ -31,6 +34,8 @@ except ImportError:
         DEFAULT_SENTRY_TIMEOUT_SECONDS,
         explore,
         format_rate,
+        normalize_sentry_environment,
+        resolve_latest_maaend_release,
         resolve_sentry_command,
         show_progress,
         write_console_table,
@@ -54,54 +59,58 @@ FAILURE_LABELS = {
     "AutoDelivery": "判断当前送货阶段",
     "AutoDeliveryRecognizeDestination": "识别送货目标",
     "AutoDeliveryRecognizeDepot": "识别仓储节点",
-    "AutoDeliveryAreaOCR": "识别任务所在区域",
-    "AutoDeliveryCurrentJobActionButton": "确认送货任务详情已加载",
-    "AutoDeliveryStartTrackingButton": "识别开始追踪按钮",
-    "AutoDeliveryDestinationField": "识别送货条件区域",
-    "AutoDeliveryDestinationYellow": "确认黄色送货条件",
-    "AutoDeliveryDestinationOCR": "识别送货目标文本",
+    "AutoDeliveryAfterResolveDestination": "进入送货目标处理",
+    "AutoDeliveryInDeliveryMissionDetail": "确认送货任务详情页面",
+    "AutoDeliveryCheckAreaText": "识别任务所在区域",
+    "AutoDeliveryCheckStartTrackingButton": "识别开始追踪按钮",
+    "AutoDeliveryCheckDestinationField": "识别送货条件区域",
+    "AutoDeliveryCheckDestinationYellowText": "确认黄色送货条件",
+    "AutoDeliveryCheckDestinationText": "识别送货目标文本",
     "AutoDeliveryEnd": "结束自动送货阶段",
     # 传送与取货
     "AutoDeliveryQuickTeleport": "准备快速传送",
     "AutoDeliveryViewDestinationMap": "点击查看任务位置",
     "AutoDeliveryStartTrackingTask": "开始追踪送货任务",
+    "AutoDeliveryInTaskDestinationMap": "确认送货任务目标地图页面",
     "AutoDeliveryInDestinationMap": "确认任务目标地图",
     "AutoDeliveryQuickTeleportSelect": "选择任务附近传送点",
     "AutoDeliveryQuickTeleportClick": "执行快速传送",
-    "AutoDeliveryQuickTeleportDone": "确认传送完成",
+    "AutoDeliveryInWorldAfterQuickTeleport": "确认传送完成",
     "AutoDeliveryPrepareNavigateDepot": "准备前往仓储节点",
     "AutoDeliveryCancelTrackingBeforeNavigateDepot": "仓储导航前取消追踪",
-    "AutoDeliveryTrackingAlreadyOffBeforeNavigateDepot": "确认仓储导航前任务未追踪",
-    "AutoDeliveryTrackingGoneBeforeNavigateDepot": "确认仓储导航前追踪标记已消失",
+    "AutoDeliveryCheckTrackingAlreadyOffBeforeNavigateDepot": "确认仓储导航前任务未追踪",
+    "AutoDeliveryCheckTrackingGoneBeforeNavigateDepot": "确认仓储导航前追踪标记已消失",
     "AutoDeliveryReturnWorldAndNavigateDepot": "返回大世界并准备仓储导航",
     "AutoDeliveryNavigateDepot": "前往仓储节点",
     "AutoDeliveryFetchGoods": "接取货物",
     "AutoDeliverySearchFetchGoodsButton": "环绕查找接取货物按钮",
-    "AutoDeliveryFetchGoodsButtonWaitFreezes": "识别接取货物按钮",
-    "AutoDeliveryFetchGoodsButton": "点击接取货物",
-    "AutoDeliveryFetchGoodsDone": "确认已携带货物",
+    "AutoDeliveryCheckFetchGoodsButton": "识别取货按钮",
+    "AutoDeliveryFetchGoodsButton": "点击取货按钮",
     "AutoDeliveryRetryNavigateDepot": "仓储站位重试",
     "AutoDeliveryOpenMissionAfterFetchGoods": "取货后返回任务界面",
-    "AutoDeliveryFindDeliveryMissionAfterFetchGoods": "查找送货任务",
-    "AutoDeliveryDeliveryMissionSelected": "确认已选中送货任务",
-    "AutoDeliveryDeliveryMissionListItem": "识别任务列表中的送货任务",
+    "AutoDeliveryOpenDeliveryMission": "打开并选择送货任务",
+    "AutoDeliveryEnsureDeliveryMissionSelected": "查找并确认送货任务",
+    "AutoDeliveryCheckDeliveryMissionSelected": "确认已选中送货任务",
+    "AutoDeliveryCheckDeliveryMissionListComplete": "确认任务列表已到底",
+    "AutoDeliveryCheckDeliveryMissionListItem": "识别任务列表中的送货任务",
     "AutoDeliverySelectDeliveryMission": "选择送货任务",
-    "AutoDeliveryInMissionMenu": "确认任务界面",
+    "AutoDeliverySelectDeliveryMissionFromList": "查找送货任务",
     "AutoDeliveryScrollMissionList": "滚动查找送货任务",
     "AutoDeliveryDeliveryMissionNotFound": "未找到送货任务",
     # 终点导航与交货
-    "AutoDeliveryCancelCurrentJobTrackingButton": "识别取消追踪按钮",
+    "AutoDeliveryCheckCancelCurrentJobTrackingButton": "识别取消追踪按钮",
     "AutoDeliveryCancelCurrentJobTracking": "送货导航前取消追踪",
-    "AutoDeliveryCurrentJobTrackingAlreadyOff": "确认送货任务未追踪",
-    "AutoDeliveryCurrentJobTrackingGone": "确认送货任务追踪标记已消失",
+    "AutoDeliveryCheckCurrentJobTrackingAlreadyOff": "确认送货任务未追踪",
+    "AutoDeliveryCheckCurrentJobTrackingGone": "确认送货任务追踪标记已消失",
     "AutoDeliveryReturnWorldAndNavigateDestination": "返回大世界并准备终点导航",
+    "AutoDeliveryPrepareNavigateDestination": "准备前往送货目标",
     "AutoDeliveryNavigateDestination": "前往送货目标",
     "AutoDeliverySearchSubmitGoodsButton": "环绕查找交货按钮",
     "AutoDeliveryRetryNavigateDestination": "送货目标站位重试",
-    "AutoDeliverySubmitGoodsWaitFreezes": "识别交货按钮",
+    "AutoDeliveryCheckSubmitGoodsButton": "识别交货按钮",
     "AutoDeliverySubmitGoods": "提交货物",
-    "AutoDeliveryIsInChatDialog": "识别送货对话",
-    "AutoDeliveryIsSkipChatButton": "识别跳过对话按钮",
+    "AutoDeliveryInChatDialog": "识别送货对话",
+    "AutoDeliveryCheckSkipChatButton": "识别跳过对话按钮",
     "AutoDeliverySkipChat": "跳过送货对话",
     "AutoDeliverySkipChatConfirm": "确认跳过送货对话",
     "AutoDeliveryCloseRewardDialog": "记录送货奖励",
@@ -141,8 +150,10 @@ class RouteRow:
     area: str
     route_id: str
     traces: int
-    internal_error_traces: int
-    internal_error_rate: float
+    failure_traces: int
+    failure_rate: float
+    without_zipline_failure_rate: float | None
+    with_zipline_failure_rate: float | None
 
 
 @dataclass(frozen=True)
@@ -299,6 +310,8 @@ def build_route_rows(
 ) -> tuple[list[RouteRow], set[str]]:
     traces_by_route: dict[str, set[str]] = defaultdict(set)
     failures_by_route: dict[str, set[str]] = defaultdict(set)
+    traces_by_mode: dict[tuple[str, bool], set[str]] = defaultdict(set)
+    failures_by_mode: dict[tuple[str, bool], set[str]] = defaultdict(set)
     definitions_by_id: dict[str, RouteDefinition] = {}
     unknown_nodes: set[str] = set()
 
@@ -308,16 +321,23 @@ def build_route_rows(
         if definition is None:
             unknown_nodes.add(node)
             continue
-        definitions_by_id[definition.route_id] = definition
+        zipline_requested = node.endswith("WithZipline")
+        route_id = definition.route_id
+        mode_key = (route_id, zipline_requested)
+        definitions_by_id[route_id] = definition
         trace = str(row["trace"])
-        traces_by_route[definition.route_id].add(trace)
+        traces_by_route[route_id].add(trace)
+        traces_by_mode[mode_key].add(trace)
         if row["span.status"] == INTERNAL_ERROR:
-            failures_by_route[definition.route_id].add(trace)
+            failures_by_route[route_id].add(trace)
+            failures_by_mode[mode_key].add(trace)
 
     report = []
     for route_id, traces in traces_by_route.items():
         definition = definitions_by_id[route_id]
         failures = len(failures_by_route[route_id])
+        without_zipline_traces = traces_by_mode[(route_id, False)]
+        with_zipline_traces = traces_by_mode[(route_id, True)]
         report.append(
             RouteRow(
                 route_type=definition.route_type,
@@ -325,15 +345,26 @@ def build_route_rows(
                 area=definition.area,
                 route_id=route_id,
                 traces=len(traces),
-                internal_error_traces=failures,
-                internal_error_rate=failures / len(traces),
+                failure_traces=failures,
+                failure_rate=failures / len(traces),
+                without_zipline_failure_rate=(
+                    len(failures_by_mode[(route_id, False)])
+                    / len(without_zipline_traces)
+                    if without_zipline_traces
+                    else None
+                ),
+                with_zipline_failure_rate=(
+                    len(failures_by_mode[(route_id, True)]) / len(with_zipline_traces)
+                    if with_zipline_traces
+                    else None
+                ),
             )
         )
     return (
         sorted(
             report,
             key=lambda row: (
-                -row.internal_error_rate,
+                -row.failure_rate,
                 -row.traces,
                 row.route_type,
                 row.name,
@@ -347,7 +378,7 @@ def collect_report(
     *,
     sentry_command: str,
     release: str | None,
-    environment: str,
+    environment: str | None,
     target: str,
     period: str,
     tasks: Sequence[str],
@@ -357,11 +388,31 @@ def collect_report(
     quiet: bool,
 ) -> tuple[Report, set[str]]:
     route_definitions = load_route_definitions(catalog_path)
-    if release:
-        escaped_release = release.replace('"', '\\"')
-        scope_filter = f'release:"{escaped_release}"'
-    else:
-        scope_filter = f"environment:{environment}"
+    if environment is not None:
+        environment = normalize_sentry_environment(environment)
+    if release is None:
+        release_description = (
+            f"{environment} 环境的最新 MaaEnd release"
+            if environment is not None
+            else "最新发布的 MaaEnd release"
+        )
+        show_progress(
+            f"[0/3] 自动选择 {release_description}",
+            quiet=quiet,
+        )
+        release = resolve_latest_maaend_release(
+            sentry_command,
+            target=target,
+            environment=environment,
+            verbose=verbose,
+            timeout_seconds=timeout_seconds,
+        )
+        show_progress(f"使用 Sentry release：{release}", quiet=quiet)
+    escaped_release = release.replace('"', '\\"')
+    scope_filter = f'release:"{escaped_release}"'
+    if environment is not None:
+        escaped_environment = environment.replace('"', '\\"')
+        scope_filter = f'{scope_filter} environment:"{escaped_environment}"'
     task_filter = f"task:[{','.join(tasks)}]"
     scope_filter = f"{scope_filter} {task_filter}"
 
@@ -385,15 +436,14 @@ def collect_report(
         period=period,
         fields=("span.description", "count_unique(trace)"),
         query=(
-            f"{scope_filter} span.description:AutoDelivery* "
-            "span.status:internal_error"
+            f"{scope_filter} span.description:AutoDelivery* span.status:internal_error"
         ),
         sort="-count_unique(trace)",
         verbose=verbose,
         timeout_seconds=timeout_seconds,
     )
 
-    show_progress("[3/3] 查询送货路线内部错误", quiet=quiet)
+    show_progress("[3/3] 查询送货路线内部失败", quiet=quiet)
     route_rows = explore(
         sentry_command,
         target=target,
@@ -420,8 +470,9 @@ def collect_report(
 
 def write_console(report: Report, output: TextIO) -> None:
     print("自动送货导航阶段", file=output)
+    print("报告内所有次数均按 trace 去重。", file=output)
     write_console_table(
-        ("阶段", "执行 trace", "失败 trace", "失败率"),
+        ("阶段", "次数", "失败次数", "失败率"),
         [
             (
                 row.stage,
@@ -435,9 +486,10 @@ def write_console(report: Report, output: TextIO) -> None:
         right_aligned={1, 2, 3},
     )
 
-    print("\n失败节点（仅统计失败 trace，不推算缺少成功 span 的阶段失败率）", file=output)
+    print("\n失败节点", file=output)
+    print("失败节点表仅统计失败次数，不计算失败率。", file=output)
     write_console_table(
-        ("阶段", "失败 trace", "节点"),
+        ("阶段", "失败次数", "节点"),
         [
             (row.stage, str(row.failure_traces), row.node)
             for row in report.failure_nodes
@@ -446,28 +498,44 @@ def write_console(report: Report, output: TextIO) -> None:
         right_aligned={1},
     )
 
-    print("\n路线内部错误（可能已被上层重试恢复）", file=output)
+    print("\n路线内部失败（可能已被上层重试恢复）", file=output)
+    print(
+        "滑索开启表示选择了 WithZipline 路线分支，不代表运行时一定乘坐滑索。",
+        file=output,
+    )
     write_console_table(
-        ("类型", "目标", "区域", "涉及 trace", "错误 trace", "错误率"),
+        (
+            "类型",
+            "目标",
+            "区域",
+            "次数",
+            "失败次数",
+            "总失败率",
+            "关闭滑索失败率",
+            "开启滑索失败率",
+        ),
         [
             (
                 row.route_type,
                 row.name,
                 row.area,
                 str(row.traces),
-                str(row.internal_error_traces),
-                format_rate(row.internal_error_rate),
+                str(row.failure_traces),
+                format_rate(row.failure_rate),
+                format_rate(row.without_zipline_failure_rate),
+                format_rate(row.with_zipline_failure_rate),
             )
             for row in report.routes
         ],
         output,
-        right_aligned={3, 4, 5},
+        right_aligned={3, 4, 5, 6, 7},
     )
 
 
 def write_markdown(report: Report, output: TextIO) -> None:
     print("## 自动送货导航阶段\n", file=output)
-    print("| 阶段 | 执行 trace | 失败 trace | 失败率 |", file=output)
+    print("> 报告内所有次数均按 trace 去重。\n", file=output)
+    print("| 阶段 | 次数 | 失败次数 | 失败率 |", file=output)
     print("|---|---:|---:|---:|", file=output)
     for row in report.stages:
         print(
@@ -478,22 +546,32 @@ def write_markdown(report: Report, output: TextIO) -> None:
 
     print("\n## 失败节点\n", file=output)
     print(
-        "> 仅统计失败 trace，不推算缺少成功 span 的阶段失败率。\n",
+        "> 失败节点表仅统计失败次数，不计算失败率。\n",
         file=output,
     )
-    print("| 阶段 | 失败 trace | 节点 |", file=output)
+    print("| 阶段 | 失败次数 | 节点 |", file=output)
     print("|---|---:|---|", file=output)
     for row in report.failure_nodes:
         print(f"| {row.stage} | {row.failure_traces} | `{row.node}` |", file=output)
 
-    print("\n## 路线内部错误\n", file=output)
-    print("> 路线内部错误可能已被上层重试恢复。\n", file=output)
-    print("| 类型 | 目标 | 区域 | 涉及 trace | 错误 trace | 错误率 |", file=output)
-    print("|---|---|---|---:|---:|---:|", file=output)
+    print("\n## 路线内部失败\n", file=output)
+    print(
+        "> 路线内部失败可能已被上层重试恢复。滑索开启表示选择了 "
+        "`WithZipline` 路线分支，不代表运行时一定乘坐滑索。\n",
+        file=output,
+    )
+    print(
+        "| 类型 | 目标 | 区域 | 次数 | 失败次数 | 总失败率 | "
+        "关闭滑索失败率 | 开启滑索失败率 |",
+        file=output,
+    )
+    print("|---|---|---|---:|---:|---:|---:|---:|", file=output)
     for row in report.routes:
         print(
             f"| {row.route_type} | {row.name} | {row.area} | {row.traces} | "
-            f"{row.internal_error_traces} | {format_rate(row.internal_error_rate)} |",
+            f"{row.failure_traces} | {format_rate(row.failure_rate)} | "
+            f"{format_rate(row.without_zipline_failure_rate)} | "
+            f"{format_rate(row.with_zipline_failure_rate)} |",
             file=output,
         )
 
@@ -503,16 +581,19 @@ def write_json(report: Report, output: TextIO) -> None:
     output.write("\n")
 
 
-def create_argument_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
+def create_argument_parser(prog: str | None = None) -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog=prog, description=__doc__)
     parser.add_argument(
         "--release",
-        help="精确的 Sentry release 名称；指定后覆盖默认 environment 筛选",
+        help=(
+            "精确的 Sentry release 名称；未指定时选择最新发布版本，"
+            "找不到发布记录时从用户样本回退"
+        ),
     )
     parser.add_argument(
         "--environment",
-        default="beta",
-        help="未指定 --release 时使用的 Sentry environment（默认：beta）",
+        choices=("stable", "beta"),
+        help="可选的 environment 过滤；stable 选择正式版，beta 选择 Beta / RC",
     )
     parser.add_argument("--target", default="maaend/rust", help="<org>/<project>")
     parser.add_argument(
@@ -549,12 +630,12 @@ def create_argument_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
 
-    arguments = create_argument_parser().parse_args(argv)
+    arguments = create_argument_parser(prog).parse_args(argv)
     if not arguments.catalog.is_file():
         raise FileNotFoundError(f"找不到送货目标目录：{arguments.catalog}")
     if not math.isfinite(arguments.timeout) or arguments.timeout <= 0:

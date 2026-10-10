@@ -1,6 +1,6 @@
 {
     "DeliveryJobsCheckWulingCityDeliveryJob": {
-        "desc": "检查武陵城区的送货任务按钮",
+        "desc": "检查武陵城的送货任务按钮",
         "recognition": "OCR",
         "roi": "DeliveryJobsCheckLocalDepotNodeWulingCityText",
         "roi_offset": [
@@ -21,7 +21,7 @@
         "rate_limit": 0
     },
     "DeliveryJobsEnterWulingCityDeliveryJob": {
-        "desc": "武陵城区：进入送货任务",
+        "desc": "武陵城：进入送货任务",
         "max_hit": 1,
         "recognition": "And",
         "all_of": [
@@ -31,6 +31,9 @@
         "box_index": 1,
         "pre_delay": 0,
         "action": "Click",
+        "anchor": {
+            "DeliveryJobsReturnToDepotNode": "InLocalDepotNode"
+        },
         "post_delay": 0,
         "rate_limit": 0,
         "next": [
@@ -38,7 +41,7 @@
         ]
     },
     "DeliveryJobsReturnAndTransferWulingCity": {
-        "desc": "返回武陵城区并转交达到报价阈值的任务",
+        "desc": "返回武陵城并转交达到报价阈值的任务",
         "pre_delay": 0,
         "action": "Custom",
         "custom_action": "SubTask",
@@ -54,7 +57,7 @@
         ]
     },
     "DeliveryJobsEnterWulingCityPriceDeliveryJob": {
-        "desc": "武陵城区：进入达到报价阈值的送货任务",
+        "desc": "武陵城：进入达到报价阈值的送货任务",
         "max_hit": 1,
         "recognition": "And",
         "all_of": [
@@ -64,74 +67,62 @@
         "box_index": 1,
         "pre_delay": 0,
         "action": "Click",
+        "anchor": {
+            "DeliveryJobsReturnToDepotNode": "InLocalDepotNode"
+        },
         "post_delay": 0,
         "rate_limit": 0,
         "next": [
             "DeliveryJobsClickTransferJob"
         ]
     },
-    "DeliveryJobsOpenOngoingAutoDeliveryWulingCity": {
-        "desc": "检测到已有送货任务，返回武陵城区打开任务详情继续全自动送货",
-        "pre_delay": 0,
-        "anchor": {
-            "DeliveryJobsAfterViewCurrentJob": "DeliveryJobsAutoDeliveryWulingCity"
-        },
-        "post_delay": 0,
-        "rate_limit": 0,
-        "next": [
-            "DeliveryJobsReturnAndViewWulingCityCurrentJob"
-        ]
-    },
-    "DeliveryJobsReturnAndViewWulingCityCurrentJob": {
-        "desc": "返回武陵城区本地仓储节点查看当前送货任务",
-        "pre_delay": 0,
-        "action": "Custom",
-        "custom_action": "SubTask",
-        "custom_action_param": {
-            "sub": [
-                "SceneEnterMenuRegionalDevelopmentWulingDepotNode"
-            ]
-        },
-        "post_delay": 0,
-        "rate_limit": 0,
-        "next": [
-            "DeliveryJobsViewWulingCityCurrentJob"
-        ]
-    },
-    "DeliveryJobsViewWulingCityCurrentJob": {
-        "desc": "武陵城区：从本地仓储节点查看当前送货任务",
+    "DeliveryJobsWaitWulingCityDeliveryMissionDetail": {
+        "desc": "等待武陵城的送货任务详情界面稳定后再开始全自动送货",
         "recognition": "And",
         "all_of": [
-            "DeliveryJobsCheckLocalDepotNodeWulingCityText",
-            "DeliveryJobsCheckWulingCityDeliveryJob"
+            "AutoDeliveryInDeliveryMissionDetail"
         ],
-        "box_index": 1,
+        // 等待区域与组件里 AutoDeliveryInDeliveryMissionDetail 的等待区域相同
+        "pre_wait_freezes": {
+            "time": 200,
+            "target": [
+                417,
+                51,
+                547,
+                279
+            ]
+        },
         "pre_delay": 0,
-        "action": "Click",
         "post_delay": 0,
         "rate_limit": 0,
         "next": [
-            "[Anchor]DeliveryJobsAfterViewCurrentJob"
+            "DeliveryJobsAutoDeliveryWulingCity"
         ]
     },
     "DeliveryJobsAutoDeliveryWulingCity": {
-        "desc": "从武陵城区当前任务详情开始全自动送货",
+        "desc": "为武陵城当前送货任务设置回跳锚点，并交给公共调用节点处理",
         "pre_delay": 0,
         "anchor": {
-            "AutoDeliveryAfterSubmitGoods": "DeliveryJobsWulingLoop"
+            "DeliveryJobsAfterAutoDelivery": "DeliveryJobsWulingLoop",
+            "DeliveryJobsReturnToDepotNode": "SceneEnterMenuRegionalDevelopmentWulingDepotNode"
         },
         "post_delay": 0,
         "rate_limit": 0,
         "next": [
-            "DeliveryJobsAutoDeliveryGuard",
-            "AutoDelivery"
-        ],
-        "focus": {
-            "Node.Recognition.Succeeded": "$task.DeliveryJobs.AutoDeliveryStart"
-        }
+            "DeliveryJobsDeliverByAutoDelivery"
+        ]
+    },
+    "DeliveryJobsOngoingDeliveryForWulingCity": {
+        "desc": "按武陵城的处理方式处理已有的待运送货物；next 由该仓储节点的处理方式覆盖，不声明回跳落点",
+        "pre_delay": 0,
+        "post_delay": 0,
+        "rate_limit": 0,
+        "next": [
+            "DeliveryJobsSkipOngoingDelivery"
+        ]
     },
     "DeliveryJobsCheckLocalDepotNodeWulingCityText": {
-        "desc": "检查本地仓储节点中是否有武陵城区",
+        "desc": "检查本地仓储节点中是否有武陵城",
         "recognition": "OCR",
         "roi": [
             67,
@@ -140,18 +131,16 @@
             95
         ],
         "expected": [
-            "武陵城区",
-            "武陵城區",
+            "武陵城",
             "(?i)Wuling\\s*City",
-            "武陵城内",
-            "무릉성 구역"
+            "무릉성"
         ],
         "pre_delay": 0,
         "post_delay": 0,
         "rate_limit": 0
     },
     "DeliveryJobsCheckWulingCityCargo": {
-        "desc": "检查武陵城区的货物是否准备好",
+        "desc": "检查武陵城的货物是否准备好",
         "recognition": "OCR",
         "roi": "DeliveryJobsCheckLocalDepotNodeWulingCityText",
         "roi_offset": [
@@ -177,7 +166,7 @@
         "rate_limit": 0
     },
     "DeliveryJobsEnterWulingCityCargo": {
-        "desc": "进入武陵城区货物",
+        "desc": "进入武陵城货物",
         "max_hit": 1,
         "recognition": "And",
         "all_of": [
@@ -190,9 +179,9 @@
         "anchor": {
             "DeliveryJobsSelectPriorityItems": "DeliveryJobsSelectPriorityItemsWuling",
             "DeliveryJobsRedistributionBidAction": "DeliveryJobsRedistributionBidNextStep",
-            "DeliveryJobsOngoingDeliveryAction": "DeliveryJobsStopForOngoingDelivery",
             "DeliveryJobsAfterAcceptJob": "DeliveryJobsDeliverQuickly",
-            "DeliveryJobsGoToDepot": "SceneEnterMenuRegionalDevelopmentWulingDepotNode"
+            "DeliveryJobsGoToDepot": "SceneEnterMenuRegionalDevelopmentWulingDepotNode",
+            "DeliveryJobsReturnToDepotNode": "SceneEnterMenuRegionalDevelopmentWulingDepotNode"
         },
         "post_delay": 0,
         "rate_limit": 0,
@@ -201,7 +190,7 @@
         ]
     },
     "DeliveryJobsDecideWulingCityQuote": {
-        "desc": "按报价决定如何处理武陵城区的货物",
+        "desc": "按报价决定如何处理武陵城的货物",
         "pre_delay": 0,
         "post_delay": 0,
         "rate_limit": 0,
@@ -212,7 +201,7 @@
         ]
     },
     "DeliveryJobsWulingCityQuoteAtLeastMinimum": {
-        "desc": "武陵城区当前报价达到或高于阈值",
+        "desc": "武陵城当前报价达到或高于阈值",
         "recognition": "Custom",
         "custom_recognition": "ExpressionRecognition",
         "custom_recognition_param": {
@@ -220,17 +209,16 @@
         },
         "pre_delay": 0,
         "anchor": {
-            "DeliveryJobsQuoteAction": "DeliveryJobsQuoteTransferJob",
             "DeliveryJobsGoToDepot": "DeliveryJobsReturnAndTransferWulingCity"
         },
         "post_delay": 0,
         "rate_limit": 0,
         "next": [
-            "[Anchor]DeliveryJobsQuoteAction"
+            "DeliveryJobsRedistributionBidNextStep"
         ]
     },
     "DeliveryJobsWulingCityQuoteBelowMinimum": {
-        "desc": "武陵城区当前报价低于阈值",
+        "desc": "武陵城当前报价低于阈值",
         "recognition": "Custom",
         "custom_recognition": "ExpressionRecognition",
         "custom_recognition_param": {
@@ -238,13 +226,12 @@
         },
         "pre_delay": 0,
         "anchor": {
-            "DeliveryJobsQuoteAction": "DeliveryJobsQuoteAcceptJobOnly",
             "DeliveryJobsGoToDepot": "SceneEnterMenuRegionalDevelopmentWulingDepotNode"
         },
         "post_delay": 0,
         "rate_limit": 0,
         "next": [
-            "[Anchor]DeliveryJobsQuoteAction"
+            "DeliveryJobsRedistributionBidNextStep"
         ]
     }
 }

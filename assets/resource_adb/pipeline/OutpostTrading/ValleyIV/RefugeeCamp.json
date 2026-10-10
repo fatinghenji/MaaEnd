@@ -1,0 +1,72 @@
+{
+    "OutpostTradingRefugeeCampCurrentGoodsReady": {
+        "custom_recognition_param": {
+            "location": "RefugeeCamp",
+            "roi": [
+                1151,
+                393,
+                66,
+                66
+            ]
+        }
+    },
+    "OutpostTradingRefugeeCampSelectPriorityItem": {
+        "custom_recognition_param": {
+            "location": "RefugeeCamp",
+            "result": "select",
+            "stock_name_offset": [
+                46,
+                -67,
+                208,
+                10
+            ],
+            "stock_quantity_offset": [
+                40,
+                -6,
+                103,
+                7
+            ],
+            "stock_click_offset": [
+                42,
+                -58,
+                130,
+                34
+            ]
+        }
+    },
+    "OutpostTradingRefugeeCampBetterSliding": {
+        "custom_action_param": {
+            "TargetQuantity": 999999,
+            "ClampTargetToSliderMax": true,
+            "FineTuneQuantity": 100,
+            "FineTuneFallback": "less",
+            "AvailableQuantity": {
+                "roi": [
+                    1041,
+                    239,
+                    131,
+                    32
+                ],
+                "only_rec": true
+            },
+            "SliderQuantity": {
+                "roi": [
+                    1065,
+                    499,
+                    78,
+                    36
+                ],
+                "only_rec": true
+            },
+            "Direction": "right",
+            "DecreaseButton": {
+                "template": "OutpostTrading/DecreaseButton.png"
+            },
+            "IncreaseButton": {
+                "template": "OutpostTrading/IncreaseButton.png"
+            },
+            "OutOfRangeOverrideEnable": "OutpostTradingReserveAlreadySatisfied",
+            "TargetReachableOverrideEnable": "OutpostTradingReserveQuantityReached"
+        }
+    }
+}

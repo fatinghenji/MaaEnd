@@ -72,11 +72,78 @@ SceneManager 使用 MaaFramework 的 `[JumpBack]` 机制，将场景接口组织
 | 菜单 | `SceneEnterMenuIntelArchiveAudioRecords` | 进入档案库-音像存档 |
 | 菜单 | `SceneEnterMenuIntelArchiveFindings` | 进入档案库-见闻辑录 |
 | 菜单 | `SceneEnterMenuIntelArchiveNexusFiles` | 进入档案库-中枢档案 |
+| 菜单 | `SceneEnterMenuSetting` | 进入设置（仅 PC） |
+| 菜单 | `SceneEnterMenuSettingPerformanceGraphic` | 进入设置-性能与画面（仅 PC） |
+| 菜单 | `SceneEnterMenuSettingAudio` | 进入设置-音频（仅 PC） |
+| 菜单 | `SceneEnterMenuSettingControls` | 进入设置-操控（仅 PC） |
+| 菜单 | `SceneEnterMenuSettingKeybinding` | 进入设置-按键（仅 PC） |
+| 菜单 | `SceneEnterMenuSettingLanguage` | 进入设置-语言（仅 PC） |
+| 菜单 | `SceneEnterMenuSettingPlatformAccount` | 进入设置-平台与账户（仅 PC） |
+| 菜单 | `SceneEnterMenuSettingOthers` | 进入设置-其他（仅 PC） |
 | 菜单 | `SceneEnterMenuHeadhunt` | 进入干员寻访界面 |
 | 辅助 | `SceneDialogConfirm` | 点击对话框确认按钮 |
 | 辅助 | `SceneDialogCancel` | 点击对话框取消按钮 |
 | 辅助 | `SceneNoticeRewardsConfirm` | 点击奖励界面确认按钮 |
+| 辅助 | `SceneNoticeRewardsUpgrade` | 权限等阶升级界面，点击空白处关闭 |
 | 辅助 | `SceneWaitLoadingExit` | 等待加载界面消失 |
+
+## 帝江号仓库接口
+
+帝江号仓库公共 Pipeline 提供仓库主界面识别、界面进入、地区切换和物品分类切换能力。
+
+### 基础与地区
+
+| 目标状态 | 跳转接口 | 验证接口 |
+| ---------------- | ----------------------------------------------- | ------------------------------ |
+| 任一已适配地区 | `SceneEnterMenuBackpackWithDepot` | `InDijiangDepot` |
+| 四号谷地 | `SceneEnterMenuBackpackWithDepotValleyIV` | `InDijiangDepotValleyIV` |
+| 武陵 | `SceneEnterMenuBackpackWithDepotWuling` | `InDijiangDepotWuling` |
+
+### 物品分类
+
+地区无关分类接口会从任意界面进入帝江号仓库并选择目标分类，不改变进入仓库后的当前地区。
+
+#### 地区无关分类
+
+| 分类 | 跳转接口 | 验证接口 |
+| -------- | ---------------------------------------------------- | -------------------------------- |
+| 全部 | `SceneEnterMenuBackpackWithDepotAll` | `InDijiangDepotAll` |
+| 矿物 | `SceneEnterMenuBackpackWithDepotOre` | `InDijiangDepotOre` |
+| 植物 | `SceneEnterMenuBackpackWithDepotPlant` | `InDijiangDepotPlant` |
+| 产物 | `SceneEnterMenuBackpackWithDepotProduct` | `InDijiangDepotProduct` |
+| 采集材料 | `SceneEnterMenuBackpackWithDepotDoodad` | `InDijiangDepotDoodad` |
+| 培养素材 | `SceneEnterMenuBackpackWithDepotNurturance` | `InDijiangDepotNurturance` |
+| 可用道具 | `SceneEnterMenuBackpackWithDepotUsable` | `InDijiangDepotUsable` |
+| 生产工具 | `SceneEnterMenuBackpackWithDepotProducer` | `InDijiangDepotProducer` |
+| 随身装置 | `SceneEnterMenuBackpackWithDepotPortableDevice` | `InDijiangDepotPortableDevice` |
+
+#### 四号谷地
+
+| 分类 | 跳转接口 | 验证接口 |
+| -------- | ---------------------------------------------------------- | ------------------------------------------- |
+| 全部 | `SceneEnterMenuBackpackWithDepotValleyIVAll` | `InDijiangDepotValleyIVAll` |
+| 矿物 | `SceneEnterMenuBackpackWithDepotValleyIVOre` | `InDijiangDepotValleyIVOre` |
+| 植物 | `SceneEnterMenuBackpackWithDepotValleyIVPlant` | `InDijiangDepotValleyIVPlant` |
+| 产物 | `SceneEnterMenuBackpackWithDepotValleyIVProduct` | `InDijiangDepotValleyIVProduct` |
+| 采集材料 | `SceneEnterMenuBackpackWithDepotValleyIVDoodad` | `InDijiangDepotValleyIVDoodad` |
+| 培养素材 | `SceneEnterMenuBackpackWithDepotValleyIVNurturance` | `InDijiangDepotValleyIVNurturance` |
+| 可用道具 | `SceneEnterMenuBackpackWithDepotValleyIVUsable` | `InDijiangDepotValleyIVUsable` |
+| 生产工具 | `SceneEnterMenuBackpackWithDepotValleyIVProducer` | `InDijiangDepotValleyIVProducer` |
+| 随身装置 | `SceneEnterMenuBackpackWithDepotValleyIVPortableDevice` | `InDijiangDepotValleyIVPortableDevice` |
+
+#### 武陵
+
+| 分类 | 跳转接口 | 验证接口 |
+| -------- | -------------------------------------------------------- | ----------------------------------------- |
+| 全部 | `SceneEnterMenuBackpackWithDepotWulingAll` | `InDijiangDepotWulingAll` |
+| 矿物 | `SceneEnterMenuBackpackWithDepotWulingOre` | `InDijiangDepotWulingOre` |
+| 植物 | `SceneEnterMenuBackpackWithDepotWulingPlant` | `InDijiangDepotWulingPlant` |
+| 产物 | `SceneEnterMenuBackpackWithDepotWulingProduct` | `InDijiangDepotWulingProduct` |
+| 采集材料 | `SceneEnterMenuBackpackWithDepotWulingDoodad` | `InDijiangDepotWulingDoodad` |
+| 培养素材 | `SceneEnterMenuBackpackWithDepotWulingNurturance` | `InDijiangDepotWulingNurturance` |
+| 可用道具 | `SceneEnterMenuBackpackWithDepotWulingUsable` | `InDijiangDepotWulingUsable` |
+| 生产工具 | `SceneEnterMenuBackpackWithDepotWulingProducer` | `InDijiangDepotWulingProducer` |
+| 随身装置 | `SceneEnterMenuBackpackWithDepotWulingPortableDevice` | `InDijiangDepotWulingPortableDevice` |
 
 ## 协议传送点接口
 

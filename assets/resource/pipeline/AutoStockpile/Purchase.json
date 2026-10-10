@@ -78,32 +78,36 @@
             "param": {
                 "custom_action": "BetterSliding",
                 "custom_action_param": {
-                    "DecreaseButton": "AutoStockpile/DecreaseButton.png",
-                    "Direction": "right",
-                    "IncreaseButton": "AutoStockpile/IncreaseButton.png",
-                    "TargetQuantity": 1,
-                    "SliderQuantity": {
-                        "Box": [
-                            360,
-                            480,
-                            100,
-                            45
-                        ],
-                        "Filter": {
-                            "lower": [
-                                20,
-                                150,
-                                150
-                            ],
-                            "upper": [
-                                35,
-                                255,
-                                255
-                            ],
-                            "method": 40
-                        }
+                    "ClampTargetToSliderMax": true,
+                    "DecreaseButton": {
+                        "template": "AutoStockpile/DecreaseButton.png"
                     },
-                    "ClampTargetToSliderMax": true
+                    "Direction": "right",
+                    "IncreaseButton": {
+                        "template": "AutoStockpile/IncreaseButton.png"
+                    },
+                    "SliderQuantity": {
+                        "roi": [
+                            360,
+                            484,
+                            100,
+                            38
+                        ]
+                    },
+                    "SliderQuantityFilter": {
+                        "lower": [
+                            75,
+                            75,
+                            75
+                        ],
+                        "upper": [
+                            255,
+                            255,
+                            255
+                        ],
+                        "method": 4
+                    },
+                    "TargetQuantity": 1
                 }
             }
         },

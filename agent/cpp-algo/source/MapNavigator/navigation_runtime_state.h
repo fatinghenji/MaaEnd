@@ -2,10 +2,16 @@
 
 #include <chrono>
 #include <cstddef>
+#include <deque>
 #include <limits>
+#include <optional>
 #include <string>
+#include <vector>
 
+#include "../Navmesh/NavmeshTypes.h"
 #include "navi_domain_types.h"
+#include "prompt_scan_profile.h"
+#include "zipline_ride_machine.h"
 
 namespace mapnavigator
 {
@@ -58,6 +64,15 @@ struct FlowState
     int32_t futile_forward_reasserts = 0;
     NaviPosition last_steer_position {};
     bool has_last_steer_position = false;
+    // Recent intervals between steering ticks: how long a sent turn waits before a tick can see it land. The
+    // entry gap above cannot stand in for it, since a tick that follows an early-return one is short however
+    // slow the loop is.
+    std::vector<int64_t> steer_periods_ms;
+    std::chrono::steady_clock::time_point last_steer_tick_at {};
+    // Vertex of the last bend braked for, so each bend is braked for once and a stop short of it is not repeated.
+    std::optional<navmesh::WorldPoint> braked_corner;
+    // That bend is still the next one ahead: walk the rest of the way in (UpdateWalkMode).
+    bool corner_walk = false;
 };
 
 struct SemanticState
@@ -69,30 +84,8 @@ struct SemanticState
     bool portal_transit_keep_moving_until_fix = false;
     bool portal_transit_needs_reacquire = false;
     std::chrono::steady_clock::time_point portal_transit_started {};
-    std::chrono::steady_clock::time_point zipline_ride_started {};
-    // 按下起滑那一刻人站在哪儿。滑一趟必然离开这里, 所以它是「到底滑没滑起来」的唯一凭据
-    NaviPosition zipline_mount_pos {};
-    ZiplineTarget zipline_landing {};
-    int zipline_landing_hits = 0;
-    // 起滑按了几次。按下去没滑走多半是俯仰没对上, 抬头角是开环发的, 只能换一档再按; 试满就退索
-    int zipline_launch_attempts = 0;
-    // 上索后先把镜头拉到俯仰上限, 再记住从这个固定基准发出的目标角；连续滑索沿用它按增量补
-    double zipline_pitch_deg = 0.0;
-    // 上一拍的位置和它连着重合了几次。滑行停稳却不在落点, 就是这趟滑岔了
-    NaviPosition zipline_last_pos {};
-    int zipline_settle_hits = 0;
-    // 滑反了正在原路滑回上索点。回去了就退索走路, 不会再滑第二趟
-    bool zipline_returning = false;
-    // 停稳判定要下"滑岔了"结论前, 是否已经扔掉跟踪状态强制重定位复核过一次。冷启动后的
-    // 低分错锁能连着几帧纹丝不动骗过稳定判据, 弃索这么贵的决定不能建立在它上面
-    bool zipline_settle_relocated = false;
     // 这一次上索是行进预筛叫停的, 人可能还差几步。此时认不出提示只说明预筛看错了, 不该丢链
     bool zipline_prompt_probe = false;
-    // 人是不是站在架子上。链首上索时置位, 链尾下索或中途退索时清掉。站着时不能直接走路,
-    // 得先右键离开架子, 否则移动指令被架子上的选点状态吃掉
-    bool zipline_mounted = false;
-    std::string held_zone_candidate;
-    int held_zone_hits = 0;
 
     void ResetTransient()
     {
@@ -103,20 +96,7 @@ struct SemanticState
         portal_transit_keep_moving_until_fix = false;
         portal_transit_needs_reacquire = false;
         portal_transit_started = {};
-        zipline_ride_started = {};
-        zipline_mount_pos = {};
-        zipline_landing = {};
-        zipline_landing_hits = 0;
-        zipline_launch_attempts = 0;
-        zipline_pitch_deg = 0.0;
-        zipline_last_pos = {};
-        zipline_settle_hits = 0;
-        zipline_returning = false;
-        zipline_settle_relocated = false;
         zipline_prompt_probe = false;
-        zipline_mounted = false;
-        held_zone_candidate.clear();
-        held_zone_hits = 0;
     }
 };
 
@@ -135,6 +115,43 @@ struct DynamicRecoveryState
         last_replan_at = {};
         anchor_index = std::numeric_limits<size_t>::max();
         active = false;
+    }
+};
+
+// FIND 的进度。按点计: 推进点位或重开导航就清
+struct FindState
+{
+    std::chrono::steady_clock::time_point started_at {};
+    int32_t steps = 0;
+    // 连续漏认的拍数, 见 kFindMissGraceTicks
+    int32_t miss_streak = 0;
+    // 没见过目标时的搜索方向 (±1)
+    int32_t search_sign = 1;
+    // 上次看到目标时框中心在中线哪一侧 (+1 右 / -1 左 / 0 没见过), 搜索第一步朝这边转
+    int32_t last_seen_side = 0;
+    // 停车判据的模板预筛 (从 find_stop 节点读出), 空 = 判据读不成模板, 探测时直接跑权威识别
+    std::optional<PromptScanProfile> stop_probe;
+
+    void Reset()
+    {
+        started_at = {};
+        steps = 0;
+        miss_streak = 0;
+        search_sign = 1;
+        last_seen_side = 0;
+        stop_probe.reset();
+    }
+};
+
+struct TriggerState
+{
+    std::chrono::steady_clock::time_point last_probe_at {};
+    std::chrono::steady_clock::time_point wait_started_at {};
+
+    void Reset()
+    {
+        last_probe_at = {};
+        wait_started_at = {};
     }
 };
 
@@ -237,6 +254,16 @@ struct SteeringRateState
     double pending_turn_deg = 0.0;
     double pending_ref_heading_deg = 0.0;
 
+    // Sends still inside their own lifetime, kept when the transport can swallow a send. Each direction of the total
+    // above is bounded by its own sends; netting the two would cancel a fresh reversal.
+    struct InFlightTurn
+    {
+        double delta_deg = 0.0;
+        std::chrono::steady_clock::time_point sent_at {};
+    };
+
+    std::deque<InFlightTurn> in_flight;
+
     void Reset()
     {
         prev_heading_deg = 0.0;
@@ -250,6 +277,7 @@ struct SteeringRateState
         turn_latch_sign = 0;
         pending_turn_deg = 0.0;
         pending_ref_heading_deg = 0.0;
+        in_flight.clear();
     }
 };
 
@@ -260,15 +288,65 @@ struct OffRouteWedgeState
 {
     std::chrono::steady_clock::time_point since {};
     std::chrono::steady_clock::time_point last_replan_at {};
+    // First blind tick (localization loss, river-fall recovery) since the watchdog last ran. Those ticks return before
+    // the watchdog and cannot move route progress, so the next watchdog tick shifts `since` past the whole gap.
+    std::chrono::steady_clock::time_point blind_since {};
     double best_distance = std::numeric_limits<double>::max();
     bool active = false;
+
+    void PauseAt(const std::chrono::steady_clock::time_point& now)
+    {
+        if (active && blind_since == std::chrono::steady_clock::time_point {}) {
+            blind_since = now;
+        }
+    }
+
+    // Returns the blind milliseconds taken off the clock, zero when there was no pause.
+    int64_t ResumeAt(const std::chrono::steady_clock::time_point& now)
+    {
+        if (blind_since == std::chrono::steady_clock::time_point {}) {
+            return 0;
+        }
+        const auto blind = now - blind_since;
+        since += blind;
+        if (last_replan_at != std::chrono::steady_clock::time_point {}) {
+            last_replan_at += blind;
+        }
+        blind_since = {};
+        return std::chrono::duration_cast<std::chrono::milliseconds>(blind).count();
+    }
 
     void Reset()
     {
         since = {};
         last_replan_at = {};
+        blind_since = {};
         best_distance = std::numeric_limits<double>::max();
         active = false;
+    }
+};
+
+// Dwell watchdog. A latched world-coordinate disc and the time spent inside it. Every other stall clock is
+// keyed on route bookkeeping — a waypoint index, a corridor anchor, a recovery episode — so anything that
+// renumbers the path zeroes it; this one answers only to where the agent physically is. Time is credited
+// between consecutive usable fixes, so blind stretches are skipped rather than counted or treated as progress.
+struct DwellWatchdogState
+{
+    double center_x = 0.0;
+    double center_y = 0.0;
+    std::string center_zone;
+    bool latched = false;
+    int64_t dwell_ms = 0;
+    std::chrono::steady_clock::time_point last_usable {};
+
+    void Reset()
+    {
+        center_x = 0.0;
+        center_y = 0.0;
+        center_zone.clear();
+        latched = false;
+        dwell_ms = 0;
+        last_usable = {};
     }
 };
 
@@ -317,15 +395,43 @@ struct ZiplineApproachState
 {
     size_t anchor_index = std::numeric_limits<size_t>::max();
     int32_t replans = 0;
-    // 到点按过一次没认出来。原地再按还是同一个答案, 所以改瞄备用站位并收紧判定圈, 让人挪一下再认
+    // 到点按过一次没认出来。原地再按还是同一个答案, 所以改瞄下一个站位并收紧判定圈, 让人挪一下再认
     bool press_missed = false;
+    // 正在试计划里的第几个站位, 连同这个进度算的是哪根架子
+    size_t spot_index = 0;
+    ZiplineNodeRef spot_tower;
+
+    // 游标只对 spot_tower 那根架子有效: 同一根架子上只往后走, 换了架子从头试。一趟里后面那条链
+    // 要是接着用上一根的进度, 新架子头一次失败就会被判成上不去
+    size_t MountSpotCursor(const ZiplineNodeRef& mount)
+    {
+        if (!spot_tower.SameTower(mount)) {
+            spot_tower = mount;
+            spot_index = 0;
+            press_missed = false;
+        }
+        return spot_index;
+    }
 
     void Reset()
     {
         anchor_index = std::numeric_limits<size_t>::max();
         replans = 0;
         press_missed = false;
+        spot_index = 0;
+        spot_tower = ZiplineNodeRef {};
     }
+};
+
+// 到点认过一次没认出提示的交互点。周围别的可交互物占着焦点时原地再认还是同一个答案, 所以收紧判定圈接着往点上走。
+// 身份同样记 canonical 下标
+struct InteractApproachState
+{
+    std::optional<size_t> prompt_missed_node;
+
+    bool PromptMissedAt(const std::optional<size_t>& node) const { return node.has_value() && prompt_missed_node == node; }
+
+    void Reset() { prompt_missed_node.reset(); }
 };
 
 // 退索恢复必须重新取得位置所有权。滑行中的快速位移和小地图遮挡可能让最后一帧落在远处的相似
@@ -335,7 +441,6 @@ struct ZiplineRecoveryState
     std::chrono::steady_clock::time_point started_at {};
     NaviPosition stable_pos {};
     int32_t stable_hits = 0;
-    int32_t rejected_fixes = 0;
     bool pending = false;
 
     void Begin(const std::chrono::steady_clock::time_point& now)
@@ -343,7 +448,6 @@ struct ZiplineRecoveryState
         started_at = now;
         stable_pos = {};
         stable_hits = 0;
-        rejected_fixes = 0;
         pending = true;
     }
 
@@ -352,7 +456,6 @@ struct ZiplineRecoveryState
         started_at = {};
         stable_pos = {};
         stable_hits = 0;
-        rejected_fixes = 0;
         pending = false;
     }
 };
@@ -369,15 +472,24 @@ struct NavigationRuntimeState
     LateralBypassState bypass;
     SteeringRateState steering_rate;
     OffRouteWedgeState offroute;
+    // 置于顶层且不进任何一个 Reset: 它要盖住的正是「重规划/换锚点把时钟清零」这件事, 跟着它们清就永远攒不满。
+    // 换区和走出盘由它自己按世界坐标清, 换了整趟导航由 BeginNavigation 清
+    DwellWatchdogState dwell;
     CrossTierEscapeState cross_tier_escape;
+    // FIND 的进度。按点计: 推进点位或重开导航就清, 步数预算与开始时刻都只属于当前这个 FIND 点
+    FindState find;
+    // 只由 BeginNavigation 清, 推进点位不重置识别节拍
+    TriggerState trigger;
     // 顶层且不进任何一个 Reset: 它数的正是重规划本身, 跟着重规划清零就永远数不满。换了上索点
     // 由它自己按身份清, 换了整趟导航由 BeginNavigation 清
     ZiplineApproachState zipline_approach;
+    InteractApproachState interact_approach;
     ZiplineRecoveryState zipline_recovery;
-    // 顶层且不进任何一个 Reset: 封禁与弃索计数的生命周期是一整趟导航, 只由 BeginNavigation 清。
-    // 跟着重规划清零, 重展开就会再选中刚失败的索。
-    std::vector<ZiplineHopBan> zipline_hop_bans;
-    int32_t zipline_abandon_count = 0;
+    // 正在滑的这一跳和这趟导航每一跳的账本。账本跨越丢链和重规划, 只由 BeginNavigation 清
+    ZiplineRideMachine zipline_ride;
+    // 置于顶层且不参与任何 Reset: 禁区按世界坐标记录障碍, 生命周期为整趟导航, 仅由 BeginNavigation 清空。
+    // 若随重规划一并清零, 下一次规划会再次穿过刚判定出障碍的位置。
+    std::vector<VirtualNoGoDisc> virtual_no_go;
     // Consecutive global re-acquires (the navigation_state_machine "recovered via global re-acquire" path) since
     // the last genuine waypoint advance. Top-level on purpose: the loss/escape/overlay Resets that fire all through
     // a wrong-tier thrash storm never clear it — only real forward progress does — so it is the one storm-proof
@@ -385,7 +497,12 @@ struct NavigationRuntimeState
     int global_reacquire_streak = 0;
     bool dynamic_replan_requested = false;
     bool nav_run_dirty = true;
+    // 起步前是否先把镜头对回角色朝向。只由站定去干别的事的停车点置位(见 ArmCameraAlign), 刹车、卡住
+    // 重发与脱困路径都不置; 留到下一个 navigate 拍才消费, 因此不进任何 Reset。
+    bool camera_align_pending = false;
     ProgressIdentityState progress_identity;
+
+    void ArmCameraAlign() { camera_align_pending = true; }
 
     void ResetNavigationAssistState()
     {
@@ -410,18 +527,27 @@ struct NavigationRuntimeState
         bypass.Reset();
         steering_rate.Reset();
         offroute.Reset();
+        dwell.Reset();
         cross_tier_escape.Reset();
         zipline_approach.Reset();
+        interact_approach.Reset();
         zipline_recovery.Reset();
-        zipline_hop_bans.clear();
-        zipline_abandon_count = 0;
+        find.Reset();
+        trigger.Reset();
+        zipline_ride.ResetNavigation();
+        virtual_no_go.clear();
         progress_identity.Reset();
         global_reacquire_streak = 0;
         dynamic_replan_requested = false;
         nav_run_dirty = true;
+        camera_align_pending = true;
         flow.navigate_started_at = now;
         flow.last_auto_sprint_time = {};
         flow.last_tick_started_at = {};
+        flow.steer_periods_ms.clear();
+        flow.last_steer_tick_at = {};
+        flow.braked_corner.reset();
+        flow.corner_walk = false;
     }
 
     void OnWaypointAdvance()
@@ -433,11 +559,15 @@ struct NavigationRuntimeState
         bypass.Reset();
         offroute.Reset();
         zipline_recovery.Reset();
+        find.Reset();
         global_reacquire_streak = 0;
         dynamic_replan_requested = false;
         nav_run_dirty = true;
         flow.last_auto_sprint_time = {};
     }
+
+    // 人站在滑索架上。这时移动指令会被架子吃掉, 上索提示也不用再认
+    bool IsZiplineMounted() const { return zipline_ride.OnTower(); }
 };
 
 } // namespace mapnavigator

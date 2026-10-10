@@ -199,7 +199,8 @@
             "param": {}
         },
         "next": [
-            "DailyEmailReceiveTSA"
+            "DailyEmailReceiveTSACannotClaim",
+            "DailyEmailReceiveTSAClaim"
         ],
         "focus": {
             "Node.Recognition.Succeeded": "收取暂存区物资"
@@ -260,15 +261,73 @@
             "DailyEmailConfirmEmail"
         ]
     },
-    "DailyEmailReceiveTSA": {
+    "DailyEmailReceiveTSACannotClaim": {
+        "desc": "暂存区无法领取（灰色按钮）",
+        "recognition": {
+            "type": "And",
+            "param": {
+                "all_of": [
+                    "DailyEmailReceiveTSAGrayButton",
+                    "DailyEmailReceiveTSACannotClaimText"
+                ],
+                "box_index": 1
+            }
+        },
+        "focus": {
+            "Node.Recognition.Succeeded": "无法领取"
+        }
+    },
+    "DailyEmailReceiveTSACannotClaimText": {
+        "desc": "暂存区无法领取时的按钮文本",
         "recognition": {
             "type": "OCR",
+            "param": {
+                "roi": "DailyEmailReceiveTSAGrayButton",
+                "expected": [
+                    "全部领取",
+                    "全部領取",
+                    "(?i)Claim\\s*All",
+                    "一括受取"
+                ]
+            }
+        }
+    },
+    "DailyEmailReceiveTSAGrayButton": {
+        "desc": "暂存区无法领取时的灰色按钮",
+        "recognition": {
+            "type": "ColorMatch",
             "param": {
                 "roi": [
                     497,
                     426,
                     342,
                     128
+                ],
+                "lower": [
+                    97,
+                    97,
+                    97
+                ],
+                "upper": [
+                    123,
+                    123,
+                    123
+                ],
+                "connected": true,
+                "count": 1000
+            }
+        }
+    },
+    "DailyEmailReceiveTSAClaim": {
+        "desc": "暂存区全部领取,白色按钮会找成右下角收取邮件按钮因此不能用#5544",
+        "recognition": {
+            "type": "OCR",
+            "param": {
+                "roi": [
+                    350,
+                    350,
+                    580,
+                    240
                 ],
                 "expected": [
                     "全部领取",
